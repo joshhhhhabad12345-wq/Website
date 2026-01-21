@@ -27,15 +27,21 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onNavigate }) => {
     setIsMobileMenuOpen(false);
   };
 
+  const Logo = () => (
+    <div className="relative flex items-center group cursor-pointer h-10 px-2">
+      <div className="absolute left-0 top-1/2 -translate-y-1/2 text-5xl font-black text-blood-500/20 transition-all duration-500 group-hover:text-blood-500/40 group-hover:scale-110 select-none font-sans">X</div>
+      <div className="relative z-10 flex items-center gap-2">
+        <Swords className="w-6 h-6 text-blood-500 transition-transform group-hover:rotate-12" />
+        <span className="font-bold text-xl tracking-wider font-sans text-white">PROJECT</span>
+      </div>
+    </div>
+  );
+
   return (
     <>
-      <nav className="fixed top-0 left-0 right-0 z-50 px-6 py-4 flex justify-between items-center backdrop-blur-md bg-black/20 border-b border-white/5">
-        <div 
-          className="flex items-center gap-2 cursor-pointer group relative z-50" 
-          onClick={() => handleNavigate('home')}
-        >
-          <Swords className="w-8 h-8 text-blood-500 transition-transform group-hover:rotate-12" />
-          <span className="font-bold text-xl tracking-wider font-sans">PROJECT <span className="text-blood-500">X</span></span>
+      <nav className="fixed top-0 left-0 right-0 z-50 px-6 py-4 flex justify-between items-center backdrop-blur-md bg-black/40 border-b border-white/5">
+        <div onClick={() => handleNavigate('home')}>
+          <Logo />
         </div>
 
         {/* Desktop Menu */}
@@ -45,7 +51,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onNavigate }) => {
           <NavItem active={currentView === 'community'} onClick={() => onNavigate('community')}>Community</NavItem>
         </div>
 
-        {/* Mobile Menu Toggle (Visible only when menu is closed) */}
+        {/* Mobile Menu Toggle */}
         {!isMobileMenuOpen && (
           <button 
             className="md:hidden text-white relative z-50 p-2 hover:bg-white/10 rounded-full transition-all duration-300"
@@ -76,10 +82,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onNavigate }) => {
 
         {/* Header inside Menu */}
         <div className="px-6 py-4 flex justify-between items-center border-b border-white/10 bg-black/50 backdrop-blur-md relative z-20">
-          <div className="flex items-center gap-2">
-            <Swords className="w-8 h-8 text-blood-500" />
-            <span className="font-bold text-xl tracking-wider font-sans">PROJECT <span className="text-blood-500">X</span></span>
-          </div>
+          <Logo />
           <button 
             className="text-white p-2 hover:bg-white/10 rounded-full transition-colors border border-white/10"
             onClick={() => setIsMobileMenuOpen(false)}

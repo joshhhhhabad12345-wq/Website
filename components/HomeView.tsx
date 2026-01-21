@@ -11,18 +11,25 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNext }) => {
     <div className="flex flex-col items-center justify-center min-h-[80vh] px-4 animate-in fade-in slide-in-from-bottom-8 duration-700">
       
       {/* Hero Header */}
-      <div className="text-center mb-16 relative">
-        <h1 className="text-7xl md:text-9xl font-bold tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-white via-red-100 to-gray-400 drop-shadow-[0_0_25px_rgba(220,0,0,0.6)] font-sans">
-          PROJECT X
-        </h1>
-        <div className="h-1 w-full bg-gradient-to-r from-transparent via-blood-500 to-transparent mt-2 shadow-[0_0_15px_#ff0000]" />
-        <p className="mt-6 text-xl md:text-2xl text-gray-300 font-light tracking-[0.2em] uppercase">
-          The Ultimate <span className="text-blood-500 font-bold drop-shadow-[0_0_5px_#ff0000]">Advantage</span>
-        </p>
+      <div className="text-center mb-16 relative flex flex-col items-center w-full">
+        {/* Background Decorative X */}
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-[15rem] md:text-[25rem] font-black text-blood-600/10 select-none leading-none z-0 font-sans pointer-events-none">
+          X
+        </div>
+        
+        <div className="relative z-10 w-full flex flex-col items-center">
+          <h1 className="text-7xl md:text-9xl font-bold tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-white via-red-100 to-gray-400 drop-shadow-[0_0_25px_rgba(220,0,0,0.6)] font-sans">
+            PROJECT
+          </h1>
+          <div className="h-1 w-full max-w-2xl bg-gradient-to-r from-transparent via-blood-500 to-transparent mt-2 shadow-[0_0_15px_#ff0000]" />
+          <p className="mt-6 text-xl md:text-2xl text-gray-300 font-light tracking-[0.2em] uppercase">
+            The Ultimate <span className="text-blood-500 font-bold drop-shadow-[0_0_5px_#ff0000]">Advantage</span>
+          </p>
+        </div>
       </div>
 
       {/* Features Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 max-w-7xl w-full mb-16">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-7xl w-full mb-16">
         <FeatureCard 
           icon={Shield}
           title="Auto Parry"

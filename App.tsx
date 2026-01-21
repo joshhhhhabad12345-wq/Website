@@ -10,11 +10,11 @@ function App() {
   const [currentView, setCurrentView] = useState<ViewState>('home');
 
   return (
-    <div className="min-h-screen text-white font-sans selection:bg-blood-900 selection:text-white overflow-x-hidden">
+    <div className="min-h-screen text-white font-sans selection:bg-blood-900 selection:text-white overflow-x-hidden flex flex-col">
       <Background />
       <Navbar currentView={currentView} onNavigate={setCurrentView} />
       
-      <main className="pt-24 pb-12 px-4 container mx-auto relative z-10 flex flex-col min-h-screen">
+      <main className="pt-24 pb-12 px-4 container mx-auto relative z-10 flex flex-col flex-1">
         {currentView === 'home' && (
           <HomeView onNext={() => setCurrentView('script')} />
         )}
@@ -28,8 +28,8 @@ function App() {
         )}
       </main>
 
-      <footer className="absolute bottom-0 w-full py-4 text-center text-gray-600 text-xs uppercase tracking-widest z-10">
-        &copy; {new Date().getFullYear()} Project X. All Rights Reserved.
+      <footer className="w-full py-8 text-center text-gray-600 text-[10px] md:text-xs uppercase tracking-[0.3em] z-10 mt-auto border-t border-white/5 bg-black/40 backdrop-blur-sm">
+        &copy; 2026 Project X. All Rights Reserved.
       </footer>
     </div>
   );
