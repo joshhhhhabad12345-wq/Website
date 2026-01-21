@@ -56,51 +56,53 @@ export const ScriptView: React.FC<ScriptViewProps> = ({ onNext }) => {
         </div>
 
         {/* Code Content */}
-        <div className="p-6 font-mono text-sm md:text-base relative bg-[#0a0a0a]">
+        <div className="p-6 font-mono text-xs md:text-sm lg:text-base relative bg-[#0a0a0a] overflow-x-auto scrollbar-hide">
           <div className="absolute top-0 left-0 w-full h-full bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-5 pointer-events-none"></div>
           
-          <div className="space-y-4">
+          <div className="space-y-4 relative z-10 whitespace-normal md:whitespace-nowrap">
              {/* Key Variable */}
-             <div className="flex flex-col md:flex-row md:items-center gap-2 group/line">
-                <span className="text-purple-400">script_key</span>
-                <span className="text-white">=</span>
-                <span className="text-green-400 break-all">"{scriptKey}"</span>
+             <div className="group/line flex items-baseline gap-2">
+                <div className="flex-1 break-all md:break-normal">
+                   <span className="text-purple-400">script_key</span>
+                   <span className="text-white mx-1.5">=</span>
+                   <span className="text-green-400">"{scriptKey}"</span>
+                </div>
                 <button 
                   onClick={() => handleCopy(scriptKey, setCopiedKey)}
-                  className="md:ml-auto md:opacity-0 group-hover/line:opacity-100 transition-opacity flex items-center gap-1 text-xs text-gray-500 hover:text-white"
+                  className="shrink-0 opacity-40 group-hover/line:opacity-100 transition-opacity flex items-center gap-1 text-[10px] text-gray-400 hover:text-white"
                 >
                   {copiedKey ? <Check className="w-3 h-3 text-green-500"/> : <Copy className="w-3 h-3"/>}
-                  {copiedKey ? 'Copied' : 'Copy Key'}
+                  {copiedKey ? 'Copied' : 'Key'}
                 </button>
              </div>
 
              {/* Loadstring */}
-             <div className="flex flex-col md:flex-row md:items-center gap-2">
+             <div className="break-all md:break-normal">
                 <span className="text-blue-400">loadstring</span>
                 <span className="text-yellow-300">(</span>
                 <span className="text-cyan-400">game</span>
                 <span className="text-white">:</span>
                 <span className="text-blue-300">HttpGet</span>
                 <span className="text-yellow-300">(</span>
-                <span className="text-green-400 break-all">"https://api.kodamo.net/loader/fxbpontv5v9fy82ycrd9"</span>
+                <span className="text-green-400">"https://api.kodamo.net/loader/fxbpontv5v9fy82ycrd9"</span>
                 <span className="text-yellow-300">))()</span>
              </div>
           </div>
 
-          {/* Blur/Copy Overlay for whole block */}
-          <div className="absolute bottom-4 right-4 z-20">
+          {/* Bottom Action */}
+          <div className="mt-8 flex justify-end">
              <Button 
                 variant="primary" 
                 onClick={() => handleCopy(fullScript, setCopiedScript)}
-                className="text-sm py-2 px-4 shadow-[0_0_15px_rgba(255,0,0,0.4)]"
+                className="text-xs py-1.5 px-3 shadow-[0_0_15px_rgba(255,0,0,0.4)]"
              >
                {copiedScript ? (
                  <>
-                   <Check className="w-4 h-4 mr-2" /> Copied All
+                   <Check className="w-3 h-3 mr-1.5" /> Copied All
                  </>
                ) : (
                  <>
-                   <Copy className="w-4 h-4 mr-2" /> Copy Full Script
+                   <Copy className="w-3 h-3 mr-1.5" /> Copy Full Script
                  </>
                )}
              </Button>
