@@ -11,11 +11,11 @@ export const ScriptView: React.FC<ScriptViewProps> = ({ onNext }) => {
   const [copiedScript, setCopiedScript] = useState(false);
 
   // Use environment variable if available, otherwise fallback to default
-  // Note: We use a type check for process to be safe in all environments
   const defaultKey = "KD-6af0f0b1-bad8-4e6e-940c-0f536a39eead";
-  const scriptKey = (typeof process !== 'undefined' && process.env && process.env.SCRIPT_KEY) 
-    ? process.env.SCRIPT_KEY 
-    : defaultKey;
+  
+  // Access Vite environment variable (must be prefixed with VITE_)
+  // We use a safe check for import.meta.env
+  const scriptKey = (import.meta as any).env?.VITE_SCRIPT_KEY || defaultKey;
 
   const loadScript = `loadstring(game:HttpGet("https://api.kodamo.net/loader/fxbpontv5v9fy82ycrd9"))()`;
 
