@@ -300,12 +300,12 @@ MiscModule:Checkbox({
 MiscModule:Divider()
 
 MiscModule:Button({
-    Title = "Copy Discord",
+    Title = "Copy Scriptblox",
     Locked = false,
     Callback = function()
-        setclipboard("https://discord.gg/dJJ3psbAxw")
+        setclipboard("https://scriptblox.com/u/Ternal")
         Isotopia:Notify({
-            Title = "Discord",
+            Title = "Scriptblox",
             Description = "Invite link copied to clipboard!",
             Duration = 3
         })
