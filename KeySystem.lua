@@ -15,10 +15,10 @@
 --           CONFIGURATION
 -- ══════════════════════════════════════
 local CONFIG = {
-    Title        = "Azure Hub",
+    Title        = "Externallity",
     Subtitle     = "Key System",
     Version      = "v2.0",
-    Discord      = "discord.gg/yourdiscord",
+    Discord      = "making one soon",
     ServiceID    = "externalliltyserviceidentifier",  -- Your Panda service identifier
     APIToken     = "3f739883-8408-403e-bcfe-fbe8c8241b8d",
     KeyLink      = "https://new.pandadevelopment.net/getkey/externalliltyserviceidentifier",
