@@ -14,7 +14,6 @@ local CONFIG = {
     APIToken          = "3f739883-8408-403e-bcfe-fbe8c8241b8d",
     GetKeyLink        = "https://new.pandadevelopment.net/getkey/externalliltyserviceidentifier?hwid=",
     ValidateEndpoint  = "https://new.pandadevelopment.net/v2_validation",
-    SaveFileName      = "external_hwid_key.txt",
     HubTitle          = "Externallity",
     HubSubtitle       = "Key Validation System",
 }
