@@ -1,0 +1,1785 @@
+--[[
+    GeminiAI Chat - Roblox Exploit Script
+    Features:
+      - Chat-style GUI (bubble messages)
+      - Gemini API key prompt on first run
+      - Gemma 3 models (NO API key required!)
+      - Model selector: gemini-1.5 → 3.1, gemma-3-4b/12b/27b
+      - Game scanner (instances, scripts, remotes, modules)
+      - Script decompiler integration (uses decompile() if available)
+      - Code block markdown rendering (``` fenced blocks)
+      - Mobile support (touch drag + large touch targets)
+      - Luau code highlighting in code blocks
+]]
+
+-- ===========================
+-- 1. SAFETY / SINGLETON GUARD
+-- ===========================
+if getgenv().GeminiAIChat then
+    pcall(function() getgenv().GeminiAIChat:Destroy() end)
+    getgenv().GeminiAIChat = nil
+end
+
+-- ===========================
+-- 2. SERVICE SETUP
+-- ===========================
+local Services = setmetatable({}, {
+    __index = function(self, name)
+        local ok, svc = pcall(game.GetService, game, name)
+        if ok and svc then
+            local ref = (cloneref and cloneref(svc)) or svc
+            rawset(self, name, ref)
+            return ref
+        end
+        return nil
+    end,
+})
+
+local UserInputService = Services.UserInputService
+local RunService       = Services.RunService
+local Players          = Services.Players
+local HttpService      = Services.HttpService
+local TweenService     = Services.TweenService
+
+local gethui_fn   = (gethui and gethui) or function() return Services.CoreGui end
+local decompile_fn = decompile or function(_) return "-- Decompiler not available in this executor." end
+local getnil_fn    = getnilinstances or function() return {} end
+
+-- ===========================
+-- 3. THEME
+-- ===========================
+local T = {
+    WinBg     = Color3.fromRGB(14, 16, 20),
+    TopBar    = Color3.fromRGB(20, 23, 28),
+    Border    = Color3.fromRGB(38, 43, 50),
+    UserBubble= Color3.fromRGB(0, 110, 210),
+    AiBubble  = Color3.fromRGB(24, 28, 35),
+    CodeBg    = Color3.fromRGB(10, 12, 16),
+    InputBg   = Color3.fromRGB(20, 24, 30),
+    InputBd   = Color3.fromRGB(50, 57, 68),
+    SendBtn   = Color3.fromRGB(0, 130, 220),
+    SendHov   = Color3.fromRGB(0, 160, 255),
+    Text      = Color3.fromRGB(215, 220, 228),
+    SubText   = Color3.fromRGB(130, 140, 155),
+    CodeText  = Color3.fromRGB(170, 220, 170),
+    Accent    = Color3.fromRGB(0, 180, 180),
+    Err       = Color3.fromRGB(230, 90, 90),
+    Close     = Color3.fromRGB(210, 70, 70),
+    CloseHov  = Color3.fromRGB(255, 80, 80),
+    ScanBtn   = Color3.fromRGB(30, 36, 46),
+    ScanBtnHv = Color3.fromRGB(0, 130, 100),
+    Highlight = Color3.fromRGB(0, 200, 150),
+    ModelBtn  = Color3.fromRGB(28, 34, 44),
+    ModelSel  = Color3.fromRGB(0, 120, 200),
+}
+
+-- ===========================
+-- 4. CONSTANTS / CONFIG
+-- ===========================
+
+-- Gemini models (require API key)
+local GEMINI_MODELS = {
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-2.0-flash",
+    "gemini-2.0-pro-exp",
+    "gemini-2.5-pro-preview-06-05",
+    "gemini-3.0-pro-exp",
+    "gemini-3.1-pro-exp",
+}
+
+-- Gemma 3 models (NO API key required!)
+local GEMMA_MODELS = {
+    "gemma-3-4b-it",
+    "gemma-3-12b-it",
+    "gemma-3-27b-it",
+}
+
+-- Combined model list for UI (Gemma 3 first, then Gemini)
+local ALL_MODELS = {}
+for _, m in ipairs(GEMMA_MODELS) do
+    table.insert(ALL_MODELS, { name = m, needsKey = false, label = m .. "  ✦ FREE" })
+end
+for _, m in ipairs(GEMINI_MODELS) do
+    table.insert(ALL_MODELS, { name = m, needsKey = true, label = m })
+end
+
+-- Quick lookup: does this model need an API key?
+local function modelNeedsKey(modelName)
+    for _, m in ipairs(GEMMA_MODELS) do
+        if m == modelName then return false end
+    end
+    return true
+end
+
+local API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
+
+local SCAN_TARGETS = {
+    "Workspace",
+    "Players",
+    "ReplicatedStorage",
+    "ReplicatedFirst",
+    "StarterGui",
+    "StarterPlayer",
+    "Lighting",
+    "ServerScriptService",
+    "ServerStorage",
+}
+
+-- ===========================
+-- 5. UTILITY FUNCTIONS
+-- ===========================
+local function uid()
+    local rng = Random.new()
+    local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    local out = ""
+    for _ = 1, 16 do
+        local r = rng:NextInteger(1, #chars)
+        out = out .. chars:sub(r, r)
+    end
+    return out
+end
+
+local function new(class, props)
+    local inst = Instance.new(class)
+    if props then
+        for k, v in pairs(props) do
+            if k ~= "Parent" then
+                pcall(function() inst[k] = v end)
+            end
+        end
+        if props.Parent then
+            inst.Parent = props.Parent
+        end
+    end
+    return inst
+end
+
+local function addCorner(parent, radius)
+    new("UICorner", { CornerRadius = UDim.new(0, radius or 8), Parent = parent })
+end
+
+local function addPadding(parent, t, b, l, r)
+    new("UIPadding", {
+        PaddingTop = UDim.new(0, t or 6),
+        PaddingBottom = UDim.new(0, b or 6),
+        PaddingLeft = UDim.new(0, l or 10),
+        PaddingRight = UDim.new(0, r or 10),
+        Parent = parent,
+    })
+end
+
+local function safeHttp(url, method, body, headers)
+    local req = (syn and syn.request) or (http and http.request) or request or http_request
+    if req then
+        local ok, res = pcall(req, {
+            Url = url,
+            Method = method or "GET",
+            Body = body,
+            Headers = headers or {},
+        })
+        if ok and res then
+            return res.Body, res.StatusCode
+        end
+        return nil, 0
+    else
+        local ok, res = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if ok then
+            return res, 200
+        end
+        return nil, 0
+    end
+end
+
+-- ===========================
+-- 6. GAME SCANNER
+-- ===========================
+local Scanner = {}
+Scanner.__index = Scanner
+
+function Scanner.new()
+    return setmetatable({}, Scanner)
+end
+
+function Scanner:ScanAll()
+    local result = {
+        scripts = {},
+        remotes = {},
+        modules = {},
+        parts   = {},
+        players = {},
+        summary = {},
+    }
+
+    local function walk(inst, depth)
+        if depth > 12 then return end
+        local ok, children = pcall(function() return inst:GetChildren() end)
+        if not ok or not children then return end
+        for _, child in ipairs(children) do
+            local cls = child.ClassName
+            local name = tostring(child.Name)
+
+            if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" then
+                local entry = {
+                    name = name,
+                    class = cls,
+                    path = self:FullPath(child),
+                    instance = child,
+                }
+                if cls == "ModuleScript" then
+                    table.insert(result.modules, entry)
+                else
+                    table.insert(result.scripts, entry)
+                end
+            elseif cls == "RemoteEvent" or cls == "RemoteFunction" or cls == "BindableEvent" or cls == "BindableFunction" then
+                table.insert(result.remotes, {
+                    name = name,
+                    class = cls,
+                    path = self:FullPath(child),
+                    instance = child,
+                })
+            elseif cls == "Part" or cls == "MeshPart" or cls == "UnionOperation" or cls == "SpecialMesh" then
+                table.insert(result.parts, {
+                    name = name,
+                    class = cls,
+                    path = self:FullPath(child),
+                })
+            end
+
+            walk(child, depth + 1)
+        end
+    end
+
+    for _, svcName in ipairs(SCAN_TARGETS) do
+        local ok, svc = pcall(game.GetService, game, svcName)
+        if ok and svc then
+            walk(svc, 0)
+        end
+    end
+
+    local nilInsts = getnil_fn()
+    for _, inst in ipairs(nilInsts) do
+        local cls = inst.ClassName
+        if cls == "LocalScript" or cls == "Script" then
+            table.insert(result.scripts, {
+                name = tostring(inst.Name),
+                class = cls .. " (nil)",
+                path = "[Nil]." .. tostring(inst.Name),
+                instance = inst,
+            })
+        end
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        table.insert(result.players, tostring(plr.Name))
+    end
+
+    result.summary = {
+        scripts = #result.scripts,
+        remotes = #result.remotes,
+        modules = #result.modules,
+        parts   = #result.parts,
+        players = #result.players,
+    }
+
+    return result
+end
+
+function Scanner:FullPath(inst)
+    local parts, current = {}, inst
+    while current and current ~= game do
+        local name = tostring(current.Name)
+        if name:match("^[%a_][%w_]*$") then
+            table.insert(parts, 1, "." .. name)
+        else
+            table.insert(parts, 1, '["' .. name .. '"]')
+        end
+        current = current.Parent
+    end
+    if #parts == 0 then return "game" end
+    return "game" .. table.concat(parts)
+end
+
+function Scanner:FormatReport(data)
+    local lines = {}
+    table.insert(lines, "=== GAME SCAN REPORT ===")
+    table.insert(lines, ("Players online: %d → %s"):format(
+        data.summary.players,
+        table.concat(data.players, ", ")
+    ))
+    table.insert(lines, ("Scripts: %d | Remotes: %d | Modules: %d | Parts: %d"):format(
+        data.summary.scripts,
+        data.summary.remotes,
+        data.summary.modules,
+        data.summary.parts
+    ))
+    table.insert(lines, "")
+
+    if #data.scripts > 0 then
+        table.insert(lines, "--- Scripts ---")
+        for i, s in ipairs(data.scripts) do
+            if i > 30 then
+                table.insert(lines, ("  ... and %d more"):format(#data.scripts - 30))
+                break
+            end
+            table.insert(lines, ("  [%s] %s"):format(s.class, s.path))
+        end
+        table.insert(lines, "")
+    end
+
+    if #data.remotes > 0 then
+        table.insert(lines, "--- Remotes / Bindables ---")
+        for i, r in ipairs(data.remotes) do
+            if i > 30 then
+                table.insert(lines, ("  ... and %d more"):format(#data.remotes - 30))
+                break
+            end
+            table.insert(lines, ("  [%s] %s"):format(r.class, r.path))
+        end
+        table.insert(lines, "")
+    end
+
+    if #data.modules > 0 then
+        table.insert(lines, "--- ModuleScripts ---")
+        for i, m in ipairs(data.modules) do
+            if i > 20 then
+                table.insert(lines, ("  ... and %d more"):format(#data.modules - 20))
+                break
+            end
+            table.insert(lines, ("  %s"):format(m.path))
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
+-- ===========================
+-- 7. LUAU SYNTAX HIGHLIGHTER (for code blocks in chat)
+-- ===========================
+local Highlighter = {}
+Highlighter.__index = Highlighter
+
+function Highlighter.new()
+    return setmetatable({}, Highlighter)
+end
+
+local KW = {
+    ["and"]=true,["break"]=true,["do"]=true,["else"]=true,["elseif"]=true,
+    ["end"]=true,["for"]=true,["function"]=true,["if"]=true,["in"]=true,
+    ["local"]=true,["not"]=true,["or"]=true,["repeat"]=true,["return"]=true,
+    ["then"]=true,["until"]=true,["while"]=true,["continue"]=true,["export"]=true,
+}
+local LIT = {["true"]=true,["false"]=true,["nil"]=true,["self"]=true}
+local GLOB = {
+    ["game"]=true,["workspace"]=true,["script"]=true,["math"]=true,["string"]=true,
+    ["table"]=true,["task"]=true,["Enum"]=true,["Instance"]=true,["Color3"]=true,
+    ["Vector3"]=true,["Vector2"]=true,["CFrame"]=true,["UDim2"]=true,["UDim"]=true,
+    ["pcall"]=true,["xpcall"]=true,["coroutine"]=true,["pairs"]=true,["ipairs"]=true,
+    ["tostring"]=true,["tonumber"]=true,["print"]=true,["warn"]=true,["error"]=true,
+    ["require"]=true,["setmetatable"]=true,["getmetatable"]=true,["type"]=true,
+    ["typeof"]=true,["rawget"]=true,["rawset"]=true,["select"]=true,["assert"]=true,
+    ["loadstring"]=true,["tick"]=true,["time"]=true,["os"]=true,["spawn"]=true,
+}
+
+function Highlighter:Run(src)
+    local function esc(s)
+        return s:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;")
+    end
+    local out = {}
+    local i = 1
+    local len = #src
+
+    while i <= len do
+        local c = src:sub(i, i)
+
+        -- line comment
+        if src:sub(i, i+1) == "--" then
+            local j = src:find("\n", i, true)
+            local slice = j and src:sub(i, j-1) or src:sub(i)
+            table.insert(out, '<font color="#5C6370">' .. esc(slice) .. "</font>")
+            i = j and j or len + 1
+
+        -- string literal
+        elseif c == '"' or c == "'" then
+            local q = c
+            local j = i + 1
+            while j <= len do
+                local b = src:sub(j,j)
+                if b == "\\" then j = j + 2
+                elseif b == q then j = j + 1; break
+                elseif b == "\n" then break
+                else j = j + 1 end
+            end
+            table.insert(out, '<font color="#98C379">' .. esc(src:sub(i, j-1)) .. "</font>")
+            i = j
+
+        -- number literal
+        elseif c:match("%d") then
+            local j = i + 1
+            while j <= len and src:sub(j,j):match("[%d%.xXeE_%+%-]") do j = j + 1 end
+            table.insert(out, '<font color="#D19A66">' .. esc(src:sub(i, j-1)) .. "</font>")
+            i = j
+
+        -- identifier / keyword
+        elseif c:match("[%a_]") then
+            local j = i + 1
+            while j <= len and src:sub(j,j):match("[%w_]") do j = j + 1 end
+            local word = src:sub(i, j-1)
+            if KW[word] then
+                table.insert(out, '<font color="#C678DD">' .. word .. "</font>")
+            elseif LIT[word] then
+                table.insert(out, '<font color="#D19A66">' .. word .. "</font>")
+            elseif GLOB[word] then
+                table.insert(out, '<font color="#61AFEF">' .. word .. "</font>")
+            else
+                table.insert(out, esc(word))
+            end
+            i = j
+
+        -- newline
+        elseif c == "\n" then
+            table.insert(out, "\n")
+            i = i + 1
+
+        else
+            table.insert(out, esc(c))
+            i = i + 1
+        end
+    end
+
+    return table.concat(out)
+end
+
+-- ===========================
+-- 8. MARKDOWN CODE BLOCK PARSER
+--    Splits text into segments: {type="text"|"code", lang=string, content=string}
+-- ===========================
+local function parseMarkdown(text)
+    local segments = {}
+    local remaining = text
+    while #remaining > 0 do
+        local s, e, lang, code = remaining:find("```([%w]*)\n?(.-)\n?```")
+        if s then
+            if s > 1 then
+                table.insert(segments, { type = "text", content = remaining:sub(1, s - 1) })
+            end
+            table.insert(segments, { type = "code", lang = lang or "", content = code or "" })
+            remaining = remaining:sub(e + 1)
+        else
+            table.insert(segments, { type = "text", content = remaining })
+            break
+        end
+    end
+    return segments
+end
+
+-- ===========================
+-- 9. GEMINI API CLIENT
+-- ===========================
+local GeminiClient = {}
+GeminiClient.__index = GeminiClient
+
+function GeminiClient.new(apiKey, model)
+    return setmetatable({
+        apiKey  = apiKey or "",
+        model   = model or "gemma-3-27b-it",
+        history = {},
+    }, GeminiClient)
+end
+
+function GeminiClient:SetModel(model)
+    self.model = model
+end
+
+function GeminiClient:IsGemma()
+    return not modelNeedsKey(self.model)
+end
+
+function GeminiClient:AddContext(role, text)
+    table.insert(self.history, { role = role, parts = {{ text = text }} })
+end
+
+function GeminiClient:ClearHistory()
+    self.history = {}
+end
+
+function GeminiClient:Send(userMessage)
+    self:AddContext("user", userMessage)
+
+    local payload = HttpService:JSONEncode({
+        contents = self.history,
+        generationConfig = {
+            temperature = 0.85,
+            maxOutputTokens = 8192,
+        },
+    })
+
+    -- Gemma 3 models don't need an API key
+    local url
+    if self:IsGemma() then
+        url = API_BASE .. self.model .. ":generateContent"
+    else
+        url = API_BASE .. self.model .. ":generateContent?key=" .. self.apiKey
+    end
+
+    local body, status = safeHttp(url, "POST", payload, {
+        ["Content-Type"] = "application/json",
+    })
+
+    if not body then
+        return nil, "HTTP request failed (status " .. tostring(status) .. ")"
+    end
+
+    local ok, decoded = pcall(function()
+        return HttpService:JSONDecode(body)
+    end)
+
+    if not ok or not decoded then
+        return nil, "Failed to decode response"
+    end
+
+    if decoded.error then
+        return nil, tostring(decoded.error.message or "API error")
+    end
+
+    local text = ""
+    if decoded.candidates and decoded.candidates[1] then
+        local cand = decoded.candidates[1]
+        if cand.content and cand.content.parts then
+            for _, part in ipairs(cand.content.parts) do
+                if part.text then
+                    text = text .. part.text
+                end
+            end
+        end
+    end
+
+    if #text == 0 then
+        return nil, "Empty response from Gemini"
+    end
+
+    self:AddContext("model", text)
+    return text, nil
+end
+
+-- ===========================
+-- 10. MAIN GUI
+-- ===========================
+local GeminiAIChat = {}
+GeminiAIChat.__index = GeminiAIChat
+
+function GeminiAIChat.new()
+    local self = setmetatable({}, GeminiAIChat)
+    self._alive = true
+    self._apiKey = nil
+    self._selectedModel = GEMMA_MODELS[3]  -- default: gemma-3-27b-it (free, no key)
+    self._client = nil
+    self._scanner = Scanner.new()
+    self._hl = Highlighter.new()
+    self._messages = {}
+    self._thinking = false
+    self._modelDropOpen = false
+
+    self:_BuildGui()
+    self:_ShowApiKeyPrompt()
+
+    getgenv().GeminiAIChat = self
+    return self
+end
+
+function GeminiAIChat:Destroy()
+    self._alive = false
+    if self.Gui then
+        pcall(function() self.Gui:Destroy() end)
+    end
+end
+
+-- ─────────────────────────────
+-- 10a. GUI CONSTRUCTION
+-- ─────────────────────────────
+function GeminiAIChat:_BuildGui()
+    self.Gui = new("ScreenGui", {
+        Name = "GeminiAIChatGui_" .. uid(),
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder = 999,
+        Parent = gethui_fn(),
+    })
+
+    -- WINDOW
+    self.Window = new("Frame", {
+        Name = "Window",
+        Size = UDim2.new(0, 520, 0, 620),
+        Position = UDim2.new(0.5, -260, 0.5, -310),
+        BackgroundColor3 = T.WinBg,
+        BorderSizePixel = 0,
+        Active = true,
+        Parent = self.Gui,
+    })
+    addCorner(self.Window, 12)
+    new("UIStroke", { Color = T.Border, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = self.Window })
+
+    -- DROP SHADOW
+    new("ImageLabel", {
+        Name = "Shadow",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 6),
+        Size = UDim2.new(1, 40, 1, 40),
+        BackgroundTransparency = 1,
+        Image = "rbxassetid://5554236805",
+        ImageColor3 = Color3.new(0, 0, 0),
+        ImageTransparency = 0.5,
+        ScaleType = Enum.ScaleType.Slice,
+        SliceCenter = Rect.new(23, 23, 277, 277),
+        ZIndex = -1,
+        Parent = self.Window,
+    })
+
+    -- TOP BAR
+    self.TopBar = new("Frame", {
+        Name = "TopBar",
+        Size = UDim2.new(1, 0, 0, 46),
+        BackgroundColor3 = T.TopBar,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = self.Window,
+    })
+    new("UICorner", { CornerRadius = UDim.new(0, 12), Parent = self.TopBar })
+    -- Fill bottom corners of topbar
+    new("Frame", {
+        Size = UDim2.new(1, 0, 0.5, 0),
+        Position = UDim2.new(0, 0, 0.5, 0),
+        BackgroundColor3 = T.TopBar,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = self.TopBar,
+    })
+
+    -- Title
+    new("TextLabel", {
+        Text = "✦ Gemini AI Chat",
+        Font = Enum.Font.GothamBold,
+        TextSize = 15,
+        TextColor3 = T.Text,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -120, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 3,
+        Parent = self.TopBar,
+    })
+
+    -- Close button
+    self.CloseBtn = new("TextButton", {
+        Text = "✕",
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        TextColor3 = Color3.fromRGB(200, 200, 200),
+        BackgroundColor3 = T.Close,
+        Size = UDim2.new(0, 28, 0, 28),
+        Position = UDim2.new(1, -36, 0.5, -14),
+        BorderSizePixel = 0,
+        ZIndex = 4,
+        Parent = self.TopBar,
+    })
+    addCorner(self.CloseBtn, 6)
+    self.CloseBtn.MouseButton1Click:Connect(function()
+        self:Destroy()
+    end)
+
+    -- Minimize button
+    self.MinBtn = new("TextButton", {
+        Text = "─",
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        TextColor3 = Color3.fromRGB(200, 200, 200),
+        BackgroundColor3 = T.ModelBtn,
+        Size = UDim2.new(0, 28, 0, 28),
+        Position = UDim2.new(1, -68, 0.5, -14),
+        BorderSizePixel = 0,
+        ZIndex = 4,
+        Parent = self.TopBar,
+    })
+    addCorner(self.MinBtn, 6)
+    self._minimized = false
+    self._chatFrame = nil -- assigned below
+    self.MinBtn.MouseButton1Click:Connect(function()
+        self._minimized = not self._minimized
+        if self._chatFrame then
+            self._chatFrame.Visible = not self._minimized
+        end
+        if self.BottomBar then
+            self.BottomBar.Visible = not self._minimized
+        end
+        if self.ModelBar then
+            self.ModelBar.Visible = not self._minimized
+        end
+        self.Window.Size = self._minimized
+            and UDim2.new(0, 520, 0, 46)
+            or  UDim2.new(0, 520, 0, 620)
+    end)
+
+    -- DRAGGABLE (mouse + touch)
+    local dragging, dragStart, startPos = false, nil, nil
+    self.TopBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = self.Window.Position
+        end
+    end)
+    self.TopBar.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not self._alive then return end
+        if (input.UserInputType == Enum.UserInputType.MouseMovement
+         or input.UserInputType == Enum.UserInputType.Touch) and dragging then
+            local delta = input.Position - dragStart
+            self.Window.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+
+    -- MODEL BAR
+    self.ModelBar = new("Frame", {
+        Name = "ModelBar",
+        Size = UDim2.new(1, 0, 0, 38),
+        Position = UDim2.new(0, 0, 0, 46),
+        BackgroundColor3 = Color3.fromRGB(18, 22, 28),
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = self.Window,
+    })
+    new("UIStroke", { Color = T.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = self.ModelBar })
+
+    new("TextLabel", {
+        Text = "Model:",
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextColor3 = T.SubText,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 50, 1, 0),
+        Position = UDim2.new(0, 8, 0, 0),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 3,
+        Parent = self.ModelBar,
+    })
+
+    self.ModelDropBtn = new("TextButton", {
+        Text = self._selectedModel .. "  ▾",
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = T.Highlight,
+        BackgroundColor3 = T.ModelBtn,
+        Size = UDim2.new(0, 280, 0, 26),
+        Position = UDim2.new(0, 60, 0.5, -13),
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = self.ModelBar,
+    })
+    addCorner(self.ModelDropBtn, 5)
+
+    -- Scan button in model bar
+    self.ScanBtn = new("TextButton", {
+        Text = "⟳ Scan Game",
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = T.Text,
+        BackgroundColor3 = T.ScanBtn,
+        Size = UDim2.new(0, 110, 0, 26),
+        Position = UDim2.new(1, -118, 0.5, -13),
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = self.ModelBar,
+    })
+    addCorner(self.ScanBtn, 5)
+    new("UIStroke", { Color = T.Highlight, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = self.ScanBtn })
+
+    -- Model dropdown panel (hidden by default)
+    self.ModelDropPanel = new("Frame", {
+        Name = "ModelDropPanel",
+        Size = UDim2.new(0, 300, 0, #ALL_MODELS * 32 + 24),
+        Position = UDim2.new(0, 60, 0, 84),
+        BackgroundColor3 = Color3.fromRGB(20, 25, 32),
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 20,
+        Parent = self.Window,
+    })
+    addCorner(self.ModelDropPanel, 7)
+    new("UIStroke", { Color = T.Border, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = self.ModelDropPanel })
+
+    local dropList = new("UIListLayout", {
+        FillDirection = Enum.FillDirection.Vertical,
+        Padding = UDim.new(0, 2),
+        Parent = self.ModelDropPanel,
+    })
+    addPadding(self.ModelDropPanel, 4, 4, 4, 4)
+    dropList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+    -- Gemma 3 header label
+    new("TextLabel", {
+        Text = "✦ Gemma 3  (No API Key needed)",
+        Font = Enum.Font.GothamBold,
+        TextSize = 10,
+        TextColor3 = T.Highlight,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -8, 0, 18),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 22,
+        Parent = self.ModelDropPanel,
+    })
+
+    local dropBtnsByName = {}
+
+    for _, modelInfo in ipairs(ALL_MODELS) do
+        local isGemma = not modelInfo.needsKey
+        local isSel = self._selectedModel == modelInfo.name
+
+        -- Separator label before Gemini section
+        if modelInfo.name == GEMINI_MODELS[1] then
+            new("TextLabel", {
+                Text = "── Gemini  (API Key required)",
+                Font = Enum.Font.GothamBold,
+                TextSize = 10,
+                TextColor3 = T.SubText,
+                BackgroundTransparency = 1,
+                Size = UDim2.new(1, -8, 0, 18),
+                TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 22,
+                Parent = self.ModelDropPanel,
+            })
+        end
+
+        local btn = new("TextButton", {
+            Text = isGemma and (modelInfo.name .. "  ✦") or modelInfo.name,
+            Font = Enum.Font.Gotham,
+            TextSize = 11,
+            TextColor3 = isSel and Color3.new(1,1,1) or (isGemma and T.Highlight or T.Text),
+            BackgroundColor3 = isSel and (isGemma and Color3.fromRGB(0, 130, 100) or T.ModelSel) or Color3.fromRGB(28, 34, 44),
+            Size = UDim2.new(1, -8, 0, 28),
+            BorderSizePixel = 0,
+            ZIndex = 21,
+            Parent = self.ModelDropPanel,
+        })
+        addCorner(btn, 5)
+        if isGemma and not isSel then
+            new("UIStroke", { Color = Color3.fromRGB(0, 120, 80), Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = btn })
+        end
+        dropBtnsByName[modelInfo.name] = btn
+
+        btn.MouseButton1Click:Connect(function()
+            local prevModel = self._selectedModel
+            self._selectedModel = modelInfo.name
+            local displayName = isGemma and (modelInfo.name .. " ✦") or modelInfo.name
+            self.ModelDropBtn.Text = displayName .. "  ▾"
+            self.ModelDropBtn.TextColor3 = isGemma and T.Highlight or T.Highlight
+            if self._client then
+                self._client:SetModel(modelInfo.name)
+            end
+            self.ModelDropPanel.Visible = false
+            self._modelDropOpen = false
+            -- Refresh highlight states
+            for mname, mbtn in pairs(dropBtnsByName) do
+                local mg = not modelNeedsKey(mname)
+                local sel = mname == modelInfo.name
+                mbtn.BackgroundColor3 = sel and (mg and Color3.fromRGB(0, 130, 100) or T.ModelSel) or Color3.fromRGB(28, 34, 44)
+                mbtn.TextColor3 = sel and Color3.new(1,1,1) or (mg and T.Highlight or T.Text)
+            end
+            -- Warn if no key set and switching to a key-required model
+            if modelInfo.needsKey and (not self._apiKey or #self._apiKey < 5) then
+                self:_AddMessage("ai", "⚠️ You switched to **" .. modelInfo.name .. "** which requires an API key.\n\nPlease reload and enter your Gemini API key, or pick a Gemma 3 model instead (no key needed).")
+            elseif not modelInfo.needsKey and prevModel ~= modelInfo.name then
+                self:_AddMessage("ai", "Switched to **" .. modelInfo.name .. "** — no API key required!")
+            end
+        end)
+    end
+
+    self.ModelDropBtn.MouseButton1Click:Connect(function()
+        self._modelDropOpen = not self._modelDropOpen
+        self.ModelDropPanel.Visible = self._modelDropOpen
+    end)
+
+    -- CHAT FRAME (scrolling)
+    self.ChatScrollFrame = new("ScrollingFrame", {
+        Name = "ChatScrollFrame",
+        Size = UDim2.new(1, 0, 1, -130),
+        Position = UDim2.new(0, 0, 0, 84),
+        BackgroundColor3 = T.WinBg,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = T.Border,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ZIndex = 2,
+        Parent = self.Window,
+    })
+    self._chatFrame = self.ChatScrollFrame
+
+    self.ChatList = new("UIListLayout", {
+        FillDirection = Enum.FillDirection.Vertical,
+        Padding = UDim.new(0, 10),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = self.ChatScrollFrame,
+    })
+    addPadding(self.ChatScrollFrame, 10, 10, 10, 10)
+
+    -- BOTTOM BAR
+    self.BottomBar = new("Frame", {
+        Name = "BottomBar",
+        Size = UDim2.new(1, 0, 0, 56),
+        Position = UDim2.new(0, 0, 1, -56),
+        BackgroundColor3 = Color3.fromRGB(16, 20, 26),
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = self.Window,
+    })
+    new("UICorner", { CornerRadius = UDim.new(0, 12), Parent = self.BottomBar })
+    -- Fill top corners of bottom bar
+    new("Frame", {
+        Size = UDim2.new(1, 0, 0.5, 0),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundColor3 = Color3.fromRGB(16, 20, 26),
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = self.BottomBar,
+    })
+    new("UIStroke", { Color = T.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = self.BottomBar })
+
+    self.InputBox = new("TextBox", {
+        Name = "InputBox",
+        PlaceholderText = "Ask Gemini anything... (or use /scan, /decompile <path>)",
+        PlaceholderColor3 = T.SubText,
+        Text = "",
+        Font = Enum.Font.Gotham,
+        TextSize = 13,
+        TextColor3 = T.Text,
+        BackgroundColor3 = T.InputBg,
+        Size = UDim2.new(1, -70, 0, 36),
+        Position = UDim2.new(0, 8, 0.5, -18),
+        BorderSizePixel = 0,
+        ClearTextOnFocus = false,
+        MultiLine = false,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 4,
+        Parent = self.BottomBar,
+    })
+    addCorner(self.InputBox, 8)
+    new("UIStroke", { Color = T.InputBd, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = self.InputBox })
+    addPadding(self.InputBox, 0, 0, 10, 10)
+
+    self.SendBtn = new("TextButton", {
+        Text = "➤",
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        TextColor3 = Color3.new(1, 1, 1),
+        BackgroundColor3 = T.SendBtn,
+        Size = UDim2.new(0, 48, 0, 36),
+        Position = UDim2.new(1, -56, 0.5, -18),
+        BorderSizePixel = 0,
+        ZIndex = 4,
+        Parent = self.BottomBar,
+    })
+    addCorner(self.SendBtn, 8)
+
+    -- Send on click
+    self.SendBtn.MouseButton1Click:Connect(function()
+        self:_OnSend()
+    end)
+
+    -- Send on Enter
+    self.InputBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed then
+            self:_OnSend()
+        end
+    end)
+
+    -- Scan button logic
+    self.ScanBtn.MouseButton1Click:Connect(function()
+        self:_ScanGame()
+    end)
+
+    -- Add welcome message
+    self:_AddMessage("ai", "Hello! I'm your Roblox AI Assistant.\n\n✦ **Gemma 3 models are FREE** — no API key needed!\nGemini models require an API key from aistudio.google.com\n\nYou can:\n- Ask me anything about Luau, Roblox, exploiting\n- Use `/scan` to scan the game for scripts, remotes, modules\n- Use `/decompile game.Workspace.SomeScript` to decompile a script\n- Change models with the dropdown above\n- Use `/clear` to reset context\n\nWhat can I help you with?")
+end
+
+-- ─────────────────────────────
+-- 10b. API KEY PROMPT
+-- ─────────────────────────────
+function GeminiAIChat:_ShowApiKeyPrompt()
+    self.KeyPrompt = new("Frame", {
+        Name = "KeyPrompt",
+        Size = UDim2.new(1, 0, 1, 0),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundColor3 = Color3.fromRGB(8, 10, 14),
+        BackgroundTransparency = 0.05,
+        ZIndex = 100,
+        Parent = self.Window,
+    })
+    addCorner(self.KeyPrompt, 12)
+
+    -- Title
+    new("TextLabel", {
+        Text = "✦ Gemini AI Chat",
+        Font = Enum.Font.GothamBold,
+        TextSize = 20,
+        TextColor3 = T.Highlight,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 36),
+        Position = UDim2.new(0, 0, 0, 18),
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ZIndex = 101,
+        Parent = self.KeyPrompt,
+    })
+
+    -- Subtitle (dynamic, changes based on model)
+    local subtitleLbl = new("TextLabel", {
+        Text = "Gemma 3 selected — no API key needed!",
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextColor3 = T.Highlight,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -40, 0, 20),
+        Position = UDim2.new(0, 20, 0, 56),
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ZIndex = 101,
+        Parent = self.KeyPrompt,
+    })
+
+    -- ── GEMMA 3 SECTION ──
+    new("TextLabel", {
+        Text = "✦ Gemma 3  (FREE — No API Key Required)",
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextColor3 = T.Highlight,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -40, 0, 18),
+        Position = UDim2.new(0, 20, 0, 86),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 101,
+        Parent = self.KeyPrompt,
+    })
+
+    local gemmaRow = new("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -40, 0, 32),
+        Position = UDim2.new(0, 20, 0, 108),
+        ZIndex = 101,
+        Parent = self.KeyPrompt,
+    })
+    new("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6),
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+        Parent = gemmaRow,
+    })
+
+    -- ── GEMINI SECTION ──
+    new("TextLabel", {
+        Text = "── Gemini  (Requires API Key)",
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextColor3 = T.SubText,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -40, 0, 18),
+        Position = UDim2.new(0, 20, 0, 150),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 101,
+        Parent = self.KeyPrompt,
+    })
+
+    local geminiGrid = new("Frame", {
+        Size = UDim2.new(1, -40, 0, 0),
+        Position = UDim2.new(0, 20, 0, 172),
+        BackgroundTransparency = 1,
+        AutomaticSize = Enum.AutomaticSize.Y,
+        ZIndex = 101,
+        Parent = self.KeyPrompt,
+    })
+    new("UIGridLayout", {
+        CellSize = UDim2.new(0.5, -4, 0, 26),
+        CellPaddingH = UDim.new(0, 4),
+        CellPaddingV = UDim.new(0, 4),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = geminiGrid,
+    })
+
+    -- Track selected model (default = Gemma 3 27b)
+    local promptSelectedModel = GEMMA_MODELS[3]
+    local promptModelBtns = {}
+
+    local function refreshButtons()
+        local needsKey = modelNeedsKey(promptSelectedModel)
+        if needsKey then
+            subtitleLbl.Text = "Gemini selected — enter your API key below"
+            subtitleLbl.TextColor3 = T.SubText
+        else
+            subtitleLbl.Text = "Gemma 3 selected — no API key needed! ✦"
+            subtitleLbl.TextColor3 = T.Highlight
+        end
+        for mname, mbtn in pairs(promptModelBtns) do
+            local isGemma = not modelNeedsKey(mname)
+            local isSel = mname == promptSelectedModel
+            mbtn.BackgroundColor3 = isSel
+                and (isGemma and Color3.fromRGB(0, 140, 100) or T.ModelSel)
+                or (isGemma and Color3.fromRGB(18, 28, 24) or T.ModelBtn)
+            mbtn.TextColor3 = isSel and Color3.new(1,1,1) or (isGemma and T.Highlight or T.SubText)
+        end
+    end
+
+    -- Build Gemma buttons (horizontal row)
+    for i, modelName in ipairs(GEMMA_MODELS) do
+        local isSel = modelName == promptSelectedModel
+        local btn = new("TextButton", {
+            Text = modelName,
+            Font = Enum.Font.Gotham,
+            TextSize = 10,
+            TextColor3 = isSel and Color3.new(1,1,1) or T.Highlight,
+            BackgroundColor3 = isSel and Color3.fromRGB(0, 140, 100) or Color3.fromRGB(18, 28, 24),
+            Size = UDim2.new(0, 0, 1, 0),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BorderSizePixel = 0,
+            ZIndex = 102,
+            LayoutOrder = i,
+            Parent = gemmaRow,
+        })
+        addCorner(btn, 5)
+        addPadding(btn, 0, 0, 8, 8)
+        new("UIStroke", { Color = Color3.fromRGB(0, 130, 90), Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = btn })
+        promptModelBtns[modelName] = btn
+        btn.MouseButton1Click:Connect(function()
+            promptSelectedModel = modelName
+            refreshButtons()
+        end)
+    end
+
+    -- Build Gemini buttons (grid)
+    for i, modelName in ipairs(GEMINI_MODELS) do
+        local isSel = modelName == promptSelectedModel
+        local btn = new("TextButton", {
+            Text = modelName,
+            Font = Enum.Font.Gotham,
+            TextSize = 10,
+            TextColor3 = isSel and Color3.new(1,1,1) or T.SubText,
+            BackgroundColor3 = isSel and T.ModelSel or T.ModelBtn,
+            BorderSizePixel = 0,
+            ZIndex = 102,
+            LayoutOrder = i,
+            Parent = geminiGrid,
+        })
+        addCorner(btn, 5)
+        promptModelBtns[modelName] = btn
+        btn.MouseButton1Click:Connect(function()
+            promptSelectedModel = modelName
+            refreshButtons()
+        end)
+    end
+
+    -- ── API KEY SECTION ──
+    local keySection = new("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -40, 0, 80),
+        Position = UDim2.new(0, 20, 0, 390),
+        ZIndex = 101,
+        Parent = self.KeyPrompt,
+    })
+
+    local keyHintLbl = new("TextLabel", {
+        Text = "API Key  (not needed for Gemma 3):",
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextColor3 = T.SubText,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 18),
+        Position = UDim2.new(0, 0, 0, 0),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 102,
+        Parent = keySection,
+    })
+    _ = keyHintLbl
+
+    local keyBox = new("TextBox", {
+        PlaceholderText = "Optional for Gemma 3 · Required for Gemini",
+        PlaceholderColor3 = T.SubText,
+        Text = "",
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextColor3 = T.Text,
+        BackgroundColor3 = T.InputBg,
+        Size = UDim2.new(1, 0, 0, 38),
+        Position = UDim2.new(0, 0, 0, 22),
+        BorderSizePixel = 0,
+        ClearTextOnFocus = false,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 102,
+        Parent = keySection,
+    })
+    addCorner(keyBox, 8)
+    new("UIStroke", { Color = T.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = keyBox })
+    addPadding(keyBox, 0, 0, 10, 10)
+
+    local keyLinkLbl = new("TextLabel", {
+        Text = "Get Gemini key: aistudio.google.com",
+        Font = Enum.Font.Gotham,
+        TextSize = 10,
+        TextColor3 = T.Accent,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 16),
+        Position = UDim2.new(0, 0, 0, 64),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 102,
+        Parent = keySection,
+    })
+    _ = keyLinkLbl
+
+    -- Status label
+    local statusLbl = new("TextLabel", {
+        Text = "",
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = T.Err,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -40, 0, 20),
+        Position = UDim2.new(0, 20, 0, 476),
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ZIndex = 102,
+        Parent = self.KeyPrompt,
+    })
+
+    -- Connect button
+    local connectBtn = new("TextButton", {
+        Text = "Start with Gemma 3  ✦  (No Key Needed)",
+        Font = Enum.Font.GothamBold,
+        TextSize = 13,
+        TextColor3 = Color3.new(1, 1, 1),
+        BackgroundColor3 = Color3.fromRGB(0, 140, 100),
+        Size = UDim2.new(1, -40, 0, 44),
+        Position = UDim2.new(0, 20, 0, 502),
+        BorderSizePixel = 0,
+        ZIndex = 102,
+        Parent = self.KeyPrompt,
+    })
+    addCorner(connectBtn, 8)
+
+    -- Update connect button text based on model selection
+    local function updateConnectBtn()
+        local needsKey = modelNeedsKey(promptSelectedModel)
+        if needsKey then
+            connectBtn.Text = "Connect with API Key  →"
+            connectBtn.BackgroundColor3 = T.SendBtn
+        else
+            connectBtn.Text = "Start with Gemma 3  ✦  (No Key Needed)"
+            connectBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 100)
+        end
+    end
+
+    -- Hook model buttons to also refresh connect button
+    for _, btn in pairs(promptModelBtns) do
+        local originalClick = btn.MouseButton1Click
+        originalClick:Connect(function()
+            updateConnectBtn()
+        end)
+    end
+
+    connectBtn.MouseButton1Click:Connect(function()
+        local needsKey = modelNeedsKey(promptSelectedModel)
+        local key = keyBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+
+        if needsKey and #key < 10 then
+            statusLbl.TextColor3 = T.Err
+            statusLbl.Text = "This model requires an API key. Enter it above."
+            return
+        end
+
+        statusLbl.TextColor3 = T.SubText
+        statusLbl.Text = needsKey and "Verifying API key..." or "Connecting to Gemma 3..."
+        connectBtn.Text = "Connecting..."
+        connectBtn.BackgroundColor3 = T.ScanBtn
+
+        task.spawn(function()
+            self._apiKey = needsKey and key or ""
+            self._selectedModel = promptSelectedModel
+            self._client = GeminiClient.new(self._apiKey, promptSelectedModel)
+
+            -- Quick ping to verify
+            local reply, err = self._client:Send("Say exactly: CONNECTED")
+            if err then
+                task.wait()
+                statusLbl.TextColor3 = T.Err
+                statusLbl.Text = "Error: " .. tostring(err)
+                updateConnectBtn()
+            else
+                task.wait()
+                self._client:ClearHistory()
+                local gameCtx = self:_BuildGameContext()
+                self._client:AddContext("user", gameCtx)
+                self._client:AddContext("model", "Understood. I am an AI integrated with the Roblox game session. I will help you analyze and understand the game.")
+
+                local isGemma = not needsKey
+                local displayName = isGemma and (promptSelectedModel .. " ✦") or promptSelectedModel
+                self.ModelDropBtn.Text = displayName .. "  ▾"
+                self.ModelDropBtn.TextColor3 = isGemma and T.Highlight or T.Highlight
+                self.KeyPrompt.Visible = false
+
+                local connMsg = isGemma
+                    and ("Connected to **" .. promptSelectedModel .. "** (Gemma 3 — no API key!) ✦\n\nGame context loaded. Use `/scan` for a fresh scan, or ask me anything!")
+                    or  ("Connected to **" .. promptSelectedModel .. "** successfully!\n\nGame context loaded. Use `/scan` for a fresh scan, or ask me anything!")
+                self:_AddMessage("ai", connMsg)
+            end
+        end)
+    end)
+
+    -- Run initial refresh
+    refreshButtons()
+    updateConnectBtn()
+end
+
+-- ─────────────────────────────
+-- 10c. GAME CONTEXT BUILDER
+-- ─────────────────────────────
+function GeminiAIChat:_BuildGameContext()
+    local data = self._scanner:ScanAll()
+    local report = self._scanner:FormatReport(data)
+    local gameName = "Unknown"
+    pcall(function() gameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name end)
+    if not gameName or gameName == "" then
+        pcall(function() gameName = game.Name end)
+    end
+
+    return ("You are an AI assistant integrated into a Roblox game session.\n"
+        .. "Game Name: " .. tostring(gameName) .. "\n"
+        .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
+        .. "Job ID: " .. tostring(game.JobId) .. "\n\n"
+        .. "Current game scan:\n" .. report .. "\n\n"
+        .. "Help the user understand and analyze this Roblox game. "
+        .. "You have knowledge of Luau, Roblox APIs, game design, and exploit development. "
+        .. "When showing code, always use ``` code blocks. "
+        .. "Be concise but thorough.")
+end
+
+-- ─────────────────────────────
+-- 10d. CHAT MESSAGE RENDERER
+-- ─────────────────────────────
+function GeminiAIChat:_AddMessage(role, text)
+    local isUser = role == "user"
+    local layoutOrder = #self._messages + 1
+    table.insert(self._messages, { role = role, text = text })
+
+    -- Outer wrapper (for alignment)
+    local wrapper = new("Frame", {
+        Name = "Msg_" .. layoutOrder,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = layoutOrder,
+        ZIndex = 2,
+        Parent = self.ChatScrollFrame,
+    })
+
+    -- Avatar label
+    local avatarLbl = new("TextLabel", {
+        Text = isUser and "You" or "AI",
+        Font = Enum.Font.GothamBold,
+        TextSize = 10,
+        TextColor3 = isUser and T.UserBubble or T.Highlight,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 30, 0, 14),
+        Position = isUser and UDim2.new(1, -40, 0, 0) or UDim2.new(0, 0, 0, 0),
+        ZIndex = 3,
+        Parent = wrapper,
+    })
+    _ = avatarLbl
+
+    -- Bubble container
+    local bubbleContainer = new("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        Position = UDim2.new(0, 0, 0, 16),
+        ZIndex = 2,
+        Parent = wrapper,
+    })
+
+    -- Parse markdown and build segments
+    local segments = parseMarkdown(text)
+
+    for _, seg in ipairs(segments) do
+        if seg.type == "text" and #seg.content:gsub("%s", "") > 0 then
+            -- Regular text bubble
+            local bubble = new("TextLabel", {
+                Text = seg.content,
+                Font = Enum.Font.Gotham,
+                TextSize = 13,
+                TextColor3 = T.Text,
+                BackgroundColor3 = isUser and T.UserBubble or T.AiBubble,
+                Size = UDim2.new(0.85, 0, 0, 0),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                AnchorPoint = isUser and Vector2.new(1, 0) or Vector2.new(0, 0),
+                Position = isUser and UDim2.new(1, 0, 0, 0) or UDim2.new(0, 0, 0, 0),
+                TextWrapped = true,
+                RichText = false,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextYAlignment = Enum.TextYAlignment.Top,
+                BorderSizePixel = 0,
+                ZIndex = 3,
+                Parent = bubbleContainer,
+            })
+            addCorner(bubble, 10)
+            addPadding(bubble, 8, 8, 12, 12)
+
+            if isUser then
+                new("UIStroke", { Color = Color3.fromRGB(0, 80, 160), Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = bubble })
+            end
+
+        elseif seg.type == "code" then
+            -- Code block
+            local codeWrap = new("Frame", {
+                BackgroundColor3 = T.CodeBg,
+                Size = UDim2.new(1, 0, 0, 0),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                BorderSizePixel = 0,
+                ZIndex = 3,
+                Parent = bubbleContainer,
+            })
+            addCorner(codeWrap, 6)
+            new("UIStroke", { Color = Color3.fromRGB(50, 60, 75), Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = codeWrap })
+
+            -- Language label
+            if seg.lang and #seg.lang > 0 then
+                local langLbl = new("TextLabel", {
+                    Text = seg.lang,
+                    Font = Enum.Font.Gotham,
+                    TextSize = 10,
+                    TextColor3 = T.Highlight,
+                    BackgroundColor3 = Color3.fromRGB(18, 22, 30),
+                    Size = UDim2.new(1, 0, 0, 20),
+                    BorderSizePixel = 0,
+                    ZIndex = 4,
+                    Parent = codeWrap,
+                })
+                addCorner(langLbl, 4)
+            end
+
+            -- Try syntax highlighting for Luau/lua
+            local isLuau = seg.lang == "lua" or seg.lang == "luau" or seg.lang == ""
+            local displayText = seg.content
+
+            if isLuau and #displayText < 8000 then
+                local hl = self._hl:Run(displayText)
+                local codeLabel = new("TextLabel", {
+                    Text = hl,
+                    Font = Enum.Font.Code,
+                    TextSize = 12,
+                    TextColor3 = T.CodeText,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    Position = UDim2.new(0, 0, 0, (seg.lang and #seg.lang > 0) and 20 or 0),
+                    TextWrapped = true,
+                    RichText = true,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextYAlignment = Enum.TextYAlignment.Top,
+                    BorderSizePixel = 0,
+                    ZIndex = 4,
+                    Parent = codeWrap,
+                })
+                addPadding(codeLabel, 6, 8, 10, 10)
+            else
+                local codeLabel = new("TextLabel", {
+                    Text = displayText:sub(1, 5000),
+                    Font = Enum.Font.Code,
+                    TextSize = 12,
+                    TextColor3 = T.CodeText,
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    Position = UDim2.new(0, 0, 0, (seg.lang and #seg.lang > 0) and 20 or 0),
+                    TextWrapped = true,
+                    RichText = false,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextYAlignment = Enum.TextYAlignment.Top,
+                    BorderSizePixel = 0,
+                    ZIndex = 4,
+                    Parent = codeWrap,
+                })
+                addPadding(codeLabel, 6, 8, 10, 10)
+            end
+        end
+    end
+
+    -- Auto-scroll to bottom
+    task.wait()
+    self.ChatScrollFrame.CanvasPosition = Vector2.new(
+        0,
+        math.max(0, self.ChatScrollFrame.AbsoluteCanvasSize.Y - self.ChatScrollFrame.AbsoluteSize.Y)
+    )
+end
+
+-- ─────────────────────────────
+-- 10e. THINKING INDICATOR
+-- ─────────────────────────────
+function GeminiAIChat:_ShowThinking()
+    if self._thinkingFrame then return end
+    local layoutOrder = #self._messages + 999
+    local wrap = new("Frame", {
+        Name = "ThinkingFrame",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 40),
+        LayoutOrder = layoutOrder,
+        ZIndex = 2,
+        Parent = self.ChatScrollFrame,
+    })
+    self._thinkingFrame = wrap
+
+    local dot = new("Frame", {
+        BackgroundColor3 = T.AiBubble,
+        Size = UDim2.new(0, 80, 0, 32),
+        Position = UDim2.new(0, 0, 0, 4),
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = wrap,
+    })
+    addCorner(dot, 10)
+
+    self._thinkingLabel = new("TextLabel", {
+        Text = "● ● ●",
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        TextColor3 = T.SubText,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        ZIndex = 4,
+        Parent = dot,
+    })
+
+    task.spawn(function()
+        local dots = {"●", "● ●", "● ● ●"}
+        local i = 1
+        while self._thinkingFrame and self._alive do
+            if self._thinkingLabel then
+                self._thinkingLabel.Text = dots[i]
+            end
+            i = (i % 3) + 1
+            task.wait(0.4)
+        end
+    end)
+
+    task.wait()
+    self.ChatScrollFrame.CanvasPosition = Vector2.new(
+        0,
+        math.max(0, self.ChatScrollFrame.AbsoluteCanvasSize.Y - self.ChatScrollFrame.AbsoluteSize.Y)
+    )
+end
+
+function GeminiAIChat:_HideThinking()
+    if self._thinkingFrame then
+        pcall(function() self._thinkingFrame:Destroy() end)
+        self._thinkingFrame = nil
+        self._thinkingLabel = nil
+    end
+end
+
+-- ─────────────────────────────
+-- 10f. SEND HANDLER + COMMANDS
+-- ─────────────────────────────
+function GeminiAIChat:_OnSend()
+    if self._thinking then return end
+    if not self._client then
+        -- Auto-connect with Gemma 3 if no key is needed
+        if not modelNeedsKey(self._selectedModel) then
+            self._client = GeminiClient.new("", self._selectedModel)
+            local gameCtx = self:_BuildGameContext()
+            self._client:AddContext("user", gameCtx)
+            self._client:AddContext("model", "Understood. I am an AI integrated with the Roblox game session.")
+        else
+            self:_AddMessage("ai", "Please enter your API key first, or switch to a Gemma 3 model (no key needed).")
+            return
+        end
+    end
+
+    local text = self.InputBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+    if #text == 0 then return end
+
+    self.InputBox.Text = ""
+    self:_AddMessage("user", text)
+
+    -- Built-in commands
+    if text:lower() == "/scan" then
+        self:_ScanGame()
+        return
+    end
+
+    if text:lower():sub(1, 11) == "/decompile " then
+        local path = text:sub(12)
+        self:_DecompileByPath(path)
+        return
+    end
+
+    if text:lower() == "/clear" then
+        self._client:ClearHistory()
+        local gameCtx = self:_BuildGameContext()
+        self._client:AddContext("user", gameCtx)
+        self._client:AddContext("model", "Understood. History cleared. I still have game context.")
+        self:_AddMessage("ai", "Chat history cleared. I still have game context loaded.")
+        return
+    end
+
+    if text:lower() == "/help" then
+        self:_AddMessage("ai", "**Commands:**\n```\n/scan          - Scan game for scripts, remotes, modules\n/decompile <path> - Decompile a script by game path\n                  (e.g. /decompile game.Workspace.MyScript)\n/clear         - Clear conversation history\n/help          - Show this message\n```\n\nYou can also just chat normally! Ask about game mechanics, Luau code, or anything else.")
+        return
+    end
+
+    -- Send to Gemini
+    self._thinking = true
+    self.SendBtn.BackgroundColor3 = T.ScanBtn
+    self:_ShowThinking()
+
+    task.spawn(function()
+        local reply, err = self._client:Send(text)
+        task.wait()
+        self:_HideThinking()
+        self._thinking = false
+        self.SendBtn.BackgroundColor3 = T.SendBtn
+
+        if err then
+            self:_AddMessage("ai", "Error: " .. tostring(err) .. "\n\nMake sure your API key is valid and the selected model is available.")
+        else
+            self:_AddMessage("ai", reply or "(no response)")
+        end
+    end)
+end
+
+-- ─────────────────────────────
+-- 10g. SCAN GAME COMMAND
+-- ─────────────────────────────
+function GeminiAIChat:_ScanGame()
+    if self._thinking then return end
+    self._thinking = true
+    self.ScanBtn.BackgroundColor3 = T.ScanBtnHv
+    self.ScanBtn.Text = "Scanning..."
+    self:_ShowThinking()
+
+    task.spawn(function()
+        local data = self._scanner:ScanAll()
+        local report = self._scanner:FormatReport(data)
+        task.wait()
+        self:_HideThinking()
+        self._thinking = false
+        self.ScanBtn.BackgroundColor3 = T.ScanBtn
+        self.ScanBtn.Text = "⟳ Scan Game"
+
+        self:_AddMessage("ai", "**Game Scan Complete!**\n\n```\n" .. report .. "\n```")
+
+        if self._client then
+            self._client:AddContext("user", "Here is an updated game scan:\n" .. report)
+            self._client:AddContext("model", "Updated game scan received and stored in context.")
+        end
+    end)
+end
+
+-- ─────────────────────────────
+-- 10h. DECOMPILE COMMAND
+-- ─────────────────────────────
+function GeminiAIChat:_DecompileByPath(pathStr)
+    self._thinking = true
+    self:_ShowThinking()
+
+    task.spawn(function()
+        local target = nil
+        pcall(function()
+            target = game
+            for part in pathStr:gmatch("[^%.%[%]\"]+") do
+                if part ~= "game" and part ~= "" then
+                    local ok, child = pcall(function()
+                        return target:FindFirstChild(part) or target[part]
+                    end)
+                    if ok and child then
+                        target = child
+                    else
+                        break
+                    end
+                end
+            end
+        end)
+
+        self:_HideThinking()
+        self._thinking = false
+
+        if not target or target == game then
+            self:_AddMessage("ai", "Could not find instance at path: `" .. pathStr .. "`\n\nTip: Try `/scan` first to find valid paths.")
+            return
+        end
+
+        local cls = tostring(target.ClassName)
+        if cls ~= "LocalScript" and cls ~= "Script" and cls ~= "ModuleScript" then
+            self:_AddMessage("ai", "Instance `" .. pathStr .. "` is a `" .. cls .. "`, not a Script.\n\nOnly LocalScript, Script, and ModuleScript can be decompiled.")
+            return
+        end
+
+        self:_AddMessage("ai", "Decompiling `" .. tostring(target.Name) .. "` (`" .. cls .. "`)...")
+        self:_ShowThinking()
+
+        task.spawn(function()
+            local source = ""
+            local decompileOk = false
+
+            pcall(function()
+                source = target.Source
+                if source and #source > 0 then
+                    decompileOk = true
+                end
+            end)
+
+            if not decompileOk then
+                pcall(function()
+                    source = decompile_fn(target)
+                    if source and #source > 0 then
+                        decompileOk = true
+                    end
+                end)
+            end
+
+            task.wait()
+            self:_HideThinking()
+
+            if not decompileOk or #source == 0 then
+                self:_AddMessage("ai", "Could not decompile `" .. tostring(target.Name) .. "`.\n\nThis may be because:\n- The script is obfuscated\n- Your executor doesn't support decompilation\n- The script is protected")
+                return
+            end
+
+            local displaySource = #source > 8000 and (source:sub(1, 8000) .. "\n-- [truncated, " .. #source .. " total chars]") or source
+            self:_AddMessage("ai", "**Decompiled: `" .. tostring(target.Name) .. "` (" .. cls .. ")**\n```lua\n" .. displaySource .. "\n```")
+
+            if self._client then
+                local snippet = #source > 3000 and source:sub(1, 3000) .. "\n-- [truncated]" or source
+                self._client:AddContext("user", "I decompiled " .. pathStr .. " (" .. cls .. "). Here is the source:\n```lua\n" .. snippet .. "\n```\nAnalyze it.")
+                self._client:AddContext("model", "I can see the decompiled source. Ready to analyze it — what would you like to know?")
+                self:_AddMessage("ai", "I've loaded the script source into context. Ask me to analyze, explain, or modify it!")
+            end
+        end)
+    end)
+end
+
+-- ===========================
+-- 11. LAUNCH
+-- ===========================
+local chat = GeminiAIChat.new()
+
+-- Notification
+pcall(function()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "Gemini AI Chat",
+        Text = "Loaded! Enter your API key to start.",
+        Duration = 4,
+    })
+end)
