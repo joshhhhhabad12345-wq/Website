@@ -1,0 +1,1277 @@
+--[[
+    Pollinations AI Chat - Roblox Exploit Script
+    Powered by pollinations.ai — 100% FREE, no API key, no sign-up, no browser needed!
+    Features:
+      - Chat-style GUI (bubble messages, code blocks)
+      - Model selector: GPT-4o, o3-mini, Mistral, Llama, DeepSeek, etc.
+      - Game scanner (scripts, remotes, modules, nil instances)
+      - Script decompiler integration (uses decompile() if available)
+      - Code block markdown rendering with Luau syntax highlighting
+      - Mobile support (touch drag + large touch targets)
+      - Zero auth — plain HTTPS POST, works from any executor
+]]
+
+-- ===========================
+-- 1. SAFETY / SINGLETON GUARD
+-- ===========================
+if getgenv().PollinationsAIChat then
+    pcall(function() getgenv().PollinationsAIChat:Destroy() end)
+    getgenv().PollinationsAIChat = nil
+end
+
+-- ===========================
+-- 2. SERVICE SETUP
+-- ===========================
+local Services = setmetatable({}, {
+    __index = function(self, name)
+        local ok, svc = pcall(game.GetService, game, name)
+        if ok and svc then
+            local ref = (cloneref and cloneref(svc)) or svc
+            rawset(self, name, ref)
+            return ref
+        end
+        return nil
+    end,
+})
+
+local UserInputService = Services.UserInputService
+local Players          = Services.Players
+local HttpService      = Services.HttpService
+
+local gethui_fn    = (gethui and gethui) or function() return Services.CoreGui end
+local decompile_fn = decompile or function(_) return "-- Decompiler not available in this executor." end
+local getnil_fn    = getnilinstances or function() return {} end
+
+-- ===========================
+-- 3. THEME
+-- ===========================
+local T = {
+    WinBg     = Color3.fromRGB(14, 16, 20),
+    TopBar    = Color3.fromRGB(18, 21, 27),
+    Border    = Color3.fromRGB(38, 43, 50),
+    UserBubble= Color3.fromRGB(0, 110, 210),
+    AiBubble  = Color3.fromRGB(22, 27, 35),
+    CodeBg    = Color3.fromRGB(10, 12, 16),
+    InputBg   = Color3.fromRGB(20, 24, 30),
+    InputBd   = Color3.fromRGB(50, 57, 68),
+    SendBtn   = Color3.fromRGB(0, 130, 220),
+    Text      = Color3.fromRGB(215, 220, 228),
+    SubText   = Color3.fromRGB(130, 140, 155),
+    CodeText  = Color3.fromRGB(170, 220, 170),
+    Accent    = Color3.fromRGB(0, 180, 180),
+    Err       = Color3.fromRGB(230, 90, 90),
+    Close     = Color3.fromRGB(200, 65, 65),
+    ScanBtn   = Color3.fromRGB(30, 36, 46),
+    ScanBtnHv = Color3.fromRGB(0, 130, 100),
+    Highlight = Color3.fromRGB(0, 200, 150),
+    ModelBtn  = Color3.fromRGB(26, 32, 42),
+    ModelSel  = Color3.fromRGB(0, 120, 200),
+    PuterGreen= Color3.fromRGB(0, 180, 120),
+    CatOpenAI = Color3.fromRGB(16, 163, 127),
+    CatAnth   = Color3.fromRGB(210, 115, 60),
+    CatGoogle = Color3.fromRGB(66, 133, 244),
+    CatMeta   = Color3.fromRGB(24, 119, 242),
+    CatAmazon = Color3.fromRGB(232, 145, 58),
+    CatQwen   = Color3.fromRGB(130, 80, 220),
+    CatMistral= Color3.fromRGB(255, 112, 67),
+}
+
+-- ===========================
+-- 4. POLLINATIONS MODELS (all free, zero auth)
+-- ===========================
+-- API: POST https://text.pollinations.ai/openai
+-- Body: { model, messages, seed, private } (OpenAI chat-completions format)
+-- Response: JSON (OpenAI chat-completions shape)
+local POLLINATIONS_MODELS = {
+    { name = "openai",               label = "GPT-4.1",                cat = "OpenAI",  catColor = T.CatOpenAI },
+    { name = "openai-large",         label = "GPT-4.1 Large",          cat = "OpenAI",  catColor = T.CatOpenAI },
+    { name = "openai-reasoning",     label = "o4-mini Reasoning",      cat = "OpenAI",  catColor = T.CatOpenAI },
+    { name = "qwen3-guard",          label = "Qwen3Guard 8B",          cat = "Qwen",    catColor = T.CatQwen   },
+    { name = "qwen-coder",           label = "Qwen3 Coder 30B",        cat = "Qwen",    catColor = T.CatQwen   },
+    { name = "amazon-nova-micro",    label = "Amazon Nova Micro",       cat = "Amazon",  catColor = T.CatAmazon },
+    { name = "gemini-2.5-flash-lite",label = "Gemini 2.5 Flash Lite",  cat = "Google",  catColor = T.CatGoogle },
+    { name = "gemini",               label = "Gemini 2.0 Flash",       cat = "Google",  catColor = T.CatGoogle },
+    { name = "gemini-thinking",      label = "Gemini 2.0 Thinking",    cat = "Google",  catColor = T.CatGoogle },
+    { name = "mistral",              label = "Mistral Small 3.2 24B",  cat = "Mistral", catColor = T.CatMistral},
+}
+
+local DEFAULT_MODEL = POLLINATIONS_MODELS[1]  -- GPT-4.1
+
+-- API: POST https://gen.pollinations.ai/v1/chat/completions
+-- Auth: Authorization: Bearer <api_key>  (get key from enter.pollinations.ai)
+local POLLINATIONS_URL = "https://gen.pollinations.ai/v1/chat/completions"
+
+local SCAN_TARGETS = {
+    "Workspace","Players","ReplicatedStorage","ReplicatedFirst",
+    "StarterGui","StarterPlayer","Lighting","ServerScriptService","ServerStorage",
+}
+
+-- ===========================
+-- 5. UTILITY FUNCTIONS
+-- ===========================
+local function uid()
+    local rng   = Random.new()
+    local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    local out   = ""
+    for _ = 1, 16 do
+        local r = rng:NextInteger(1, #chars)
+        out = out .. chars:sub(r, r)
+    end
+    return out
+end
+
+local function new(class, props)
+    local inst = Instance.new(class)
+    if props then
+        for k, v in pairs(props) do
+            if k ~= "Parent" then pcall(function() inst[k] = v end) end
+        end
+        if props.Parent then inst.Parent = props.Parent end
+    end
+    return inst
+end
+
+local function addCorner(parent, radius)
+    new("UICorner", { CornerRadius = UDim.new(0, radius or 8), Parent = parent })
+end
+
+local function addPadding(parent, t, b, l, r)
+    new("UIPadding", {
+        PaddingTop    = UDim.new(0, t or 6),
+        PaddingBottom = UDim.new(0, b or 6),
+        PaddingLeft   = UDim.new(0, l or 10),
+        PaddingRight  = UDim.new(0, r or 10),
+        Parent = parent,
+    })
+end
+
+local function safeHttp(url, method, body, headers)
+    local req = (syn and syn.request) or (http and http.request) or request or http_request
+    if req then
+        local ok, res = pcall(req, {
+            Url     = url,
+            Method  = method or "GET",
+            Body    = body,
+            Headers = headers or {},
+        })
+        if ok and res then return res.Body, res.StatusCode end
+        return nil, 0
+    else
+        -- game:HttpGet only supports GET; POST requests require an executor with request()
+        if (method or "GET"):upper() ~= "GET" then
+            return nil, 0
+        end
+        local ok, res = pcall(function() return game:HttpGet(url) end)
+        if ok then return res, 200 end
+        return nil, 0
+    end
+end
+
+local function findModelByName(name)
+    for _, m in ipairs(POLLINATIONS_MODELS) do
+        if m.name == name then return m end
+    end
+    return DEFAULT_MODEL
+end
+
+-- ===========================
+-- 6. GAME SCANNER
+-- ===========================
+local Scanner = {}
+Scanner.__index = Scanner
+
+function Scanner.new() return setmetatable({}, Scanner) end
+
+function Scanner:FullPath(inst)
+    local parts, current = {}, inst
+    while current and current ~= game do
+        local name = tostring(current.Name)
+        table.insert(parts, 1, name:match("^[%a_][%w_]*$") and ("." .. name) or ('["' .. name .. '"]'))
+        current = current.Parent
+    end
+    if #parts == 0 then return "game" end
+    return "game" .. table.concat(parts)
+end
+
+function Scanner:ScanAll()
+    local result = { scripts={}, remotes={}, modules={}, parts={}, players={} }
+    local function walk(inst, depth)
+        if depth > 12 then return end
+        local ok, children = pcall(function() return inst:GetChildren() end)
+        if not ok or not children then return end
+        for _, child in ipairs(children) do
+            local cls  = child.ClassName
+            local path = self:FullPath(child)
+            if cls == "LocalScript" or cls == "Script" then
+                table.insert(result.scripts, { name=child.Name, class=cls, path=path, instance=child })
+            elseif cls == "ModuleScript" then
+                table.insert(result.modules, { name=child.Name, class=cls, path=path, instance=child })
+            elseif cls == "RemoteEvent" or cls == "RemoteFunction" or cls == "BindableEvent" or cls == "BindableFunction" then
+                table.insert(result.remotes, { name=child.Name, class=cls, path=path })
+            elseif cls == "Part" or cls == "MeshPart" or cls == "UnionOperation" then
+                table.insert(result.parts, { name=child.Name, class=cls, path=path })
+            end
+            walk(child, depth + 1)
+        end
+    end
+    for _, svcName in ipairs(SCAN_TARGETS) do
+        local ok, svc = pcall(game.GetService, game, svcName)
+        if ok and svc then walk(svc, 0) end
+    end
+    for _, inst in ipairs(getnil_fn()) do
+        local cls = inst.ClassName
+        if cls == "LocalScript" or cls == "Script" then
+            table.insert(result.scripts, { name=tostring(inst.Name), class=cls.." (nil)", path="[Nil]."..tostring(inst.Name), instance=inst })
+        end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        table.insert(result.players, tostring(plr.Name))
+    end
+    return result
+end
+
+function Scanner:FormatReport(data)
+    local lines = {}
+    table.insert(lines, "=== GAME SCAN REPORT ===")
+    table.insert(lines, ("Players (%d): %s"):format(#data.players, table.concat(data.players, ", ")))
+    table.insert(lines, ("Scripts: %d | Remotes: %d | Modules: %d | Parts: %d"):format(
+        #data.scripts, #data.remotes, #data.modules, #data.parts))
+    table.insert(lines, "")
+    if #data.scripts > 0 then
+        table.insert(lines, "--- Scripts ---")
+        for i, s in ipairs(data.scripts) do
+            if i > 30 then table.insert(lines, ("  ...and %d more"):format(#data.scripts-30)); break end
+            table.insert(lines, ("  [%s] %s"):format(s.class, s.path))
+        end
+        table.insert(lines, "")
+    end
+    if #data.remotes > 0 then
+        table.insert(lines, "--- Remotes / Bindables ---")
+        for i, r in ipairs(data.remotes) do
+            if i > 30 then table.insert(lines, ("  ...and %d more"):format(#data.remotes-30)); break end
+            table.insert(lines, ("  [%s] %s"):format(r.class, r.path))
+        end
+        table.insert(lines, "")
+    end
+    if #data.modules > 0 then
+        table.insert(lines, "--- ModuleScripts ---")
+        for i, m in ipairs(data.modules) do
+            if i > 20 then table.insert(lines, ("  ...and %d more"):format(#data.modules-20)); break end
+            table.insert(lines, ("  %s"):format(m.path))
+        end
+    end
+    return table.concat(lines, "\n")
+end
+
+-- ===========================
+-- 7. LUAU HIGHLIGHTER
+-- ===========================
+local Highlighter = {}
+Highlighter.__index = Highlighter
+function Highlighter.new() return setmetatable({}, Highlighter) end
+
+local KW   = {["and"]=1,["break"]=1,["do"]=1,["else"]=1,["elseif"]=1,["end"]=1,
+              ["for"]=1,["function"]=1,["if"]=1,["in"]=1,["local"]=1,["not"]=1,
+              ["or"]=1,["repeat"]=1,["return"]=1,["then"]=1,["until"]=1,["while"]=1,["continue"]=1}
+local LIT  = {["true"]=1,["false"]=1,["nil"]=1,["self"]=1}
+local GLOB = {["game"]=1,["workspace"]=1,["math"]=1,["string"]=1,["table"]=1,["task"]=1,
+              ["Enum"]=1,["Instance"]=1,["Color3"]=1,["Vector3"]=1,["CFrame"]=1,["UDim2"]=1,
+              ["pcall"]=1,["pairs"]=1,["ipairs"]=1,["tostring"]=1,["tonumber"]=1,["print"]=1,
+              ["warn"]=1,["error"]=1,["require"]=1,["setmetatable"]=1,["getmetatable"]=1,["type"]=1}
+
+function Highlighter:Run(src)
+    local function esc(s) return s:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;") end
+    local out, i, len = {}, 1, #src
+    while i <= len do
+        local c = src:sub(i,i)
+        if src:sub(i,i+1) == "--" then
+            local j = src:find("\n", i, true)
+            local sl = j and src:sub(i,j-1) or src:sub(i)
+            table.insert(out, '<font color="#5C6370">'..esc(sl).."</font>")
+            i = j and j or len+1
+        elseif c == '"' or c == "'" then
+            local q, j = c, i+1
+            while j <= len do
+                local b = src:sub(j,j)
+                if b == "\\" then j=j+2
+                elseif b == q then j=j+1; break
+                elseif b == "\n" then break
+                else j=j+1 end
+            end
+            table.insert(out, '<font color="#98C379">'..esc(src:sub(i,j-1)).."</font>")
+            i = j
+        elseif c:match("%d") then
+            local j = i+1
+            while j <= len and src:sub(j,j):match("[%d%.eExX_]") do j=j+1 end
+            table.insert(out, '<font color="#D19A66">'..esc(src:sub(i,j-1)).."</font>")
+            i = j
+        elseif c:match("[%a_]") then
+            local j = i+1
+            while j <= len and src:sub(j,j):match("[%w_]") do j=j+1 end
+            local word = src:sub(i,j-1)
+            if KW[word] then
+                table.insert(out, '<font color="#C678DD">'..word.."</font>")
+            elseif LIT[word] then
+                table.insert(out, '<font color="#D19A66">'..word.."</font>")
+            elseif GLOB[word] then
+                table.insert(out, '<font color="#61AFEF">'..word.."</font>")
+            else
+                table.insert(out, esc(word))
+            end
+            i = j
+        elseif c == "\n" then
+            table.insert(out, "\n"); i=i+1
+        else
+            table.insert(out, esc(c)); i=i+1
+        end
+    end
+    return table.concat(out)
+end
+
+-- ===========================
+-- 8. MARKDOWN PARSER
+-- ===========================
+local function parseMarkdown(text)
+    local segs, remaining = {}, text
+    while #remaining > 0 do
+        local s, e, lang, code = remaining:find("```([%w]*)\n?(.-)\n?```")
+        if s then
+            if s > 1 then table.insert(segs, { type="text", content=remaining:sub(1,s-1) }) end
+            table.insert(segs, { type="code", lang=lang or "", content=code or "" })
+            remaining = remaining:sub(e+1)
+        else
+            table.insert(segs, { type="text", content=remaining }); break
+        end
+    end
+    return segs
+end
+
+-- ===========================
+-- 9. POLLINATIONS AI CLIENT
+--    https://text.pollinations.ai/openai — zero auth, OpenAI-compatible JSON response
+-- ===========================
+local PollinationsClient = {}
+PollinationsClient.__index = PollinationsClient
+
+function PollinationsClient.new(modelName, apiKey)
+    return setmetatable({
+        model   = modelName or DEFAULT_MODEL.name,
+        history = {},
+        _seed   = math.random(1, 99999),
+        _apiKey = apiKey or "",
+    }, PollinationsClient)
+end
+
+function PollinationsClient:SetModel(modelName)
+    self.model = modelName
+end
+
+-- role: "user" | "assistant" | "system"
+function PollinationsClient:AddContext(role, text)
+    table.insert(self.history, { role = role, content = text })
+end
+
+function PollinationsClient:ClearHistory()
+    self.history = {}
+end
+
+function PollinationsClient:Send(userMessage)
+    self:AddContext("user", userMessage)
+
+    -- gen.pollinations.ai uses standard OpenAI chat completions format
+    local payload = HttpService:JSONEncode({
+        model    = self.model,
+        messages = self.history,
+        seed     = self._seed,
+    })
+
+    local body, status = safeHttp(
+        POLLINATIONS_URL, "POST", payload,
+        {
+            ["Content-Type"]  = "application/json",
+            ["Accept"]        = "application/json",
+            ["Authorization"] = "Bearer " .. self._apiKey,
+        }
+    )
+
+    if not body or #body == 0 then
+        return nil, ("HTTP %d — check executor allows outbound HTTPS"):format(status)
+    end
+
+    -- Response is JSON in OpenAI chat-completions shape
+    local ok, decoded = pcall(function() return HttpService:JSONDecode(body) end)
+    if not ok or type(decoded) ~= "table" then
+        -- Rare: response is already plain text (some lightweight models)
+        local plain = body:gsub("^%s+",""):gsub("%s+$","")
+        if #plain > 0 then
+            self:AddContext("assistant", plain)
+            return plain, nil
+        end
+        return nil, "Bad JSON from server. Raw: " .. body:sub(1, 200)
+    end
+
+    -- Surface any API-level error message
+    if decoded.error then
+        local e = decoded.error
+        local msg = type(e) == "table" and tostring(e.message or e.code or "unknown") or tostring(e)
+        return nil, "API error: " .. msg
+    end
+
+    -- Extract content from OpenAI choices array
+    local text = ""
+    if decoded.choices and decoded.choices[1] then
+        local choice = decoded.choices[1]
+        local msg    = choice.message or choice.delta or {}
+        local raw    = msg.content
+        if type(raw) == "string" then
+            text = raw
+        elseif type(raw) == "table" then
+            -- Content-parts format (vision models)
+            for _, part in ipairs(raw) do
+                if type(part) == "table" and part.text then
+                    text = text .. part.text
+                end
+            end
+        end
+    end
+
+    text = text:gsub("^%s+",""):gsub("%s+$","")
+    if #text == 0 then
+        return nil, "Empty content in response (status " .. status .. ")"
+    end
+
+    self:AddContext("assistant", text)
+    return text, nil
+end
+
+-- ===========================
+-- 10. MAIN GUI CLASS
+-- ===========================
+local PollinationsAIChat = {}
+PollinationsAIChat.__index = PollinationsAIChat
+
+function PollinationsAIChat.new()
+    local self = setmetatable({}, PollinationsAIChat)
+    self._alive         = true
+    self._selectedModel = DEFAULT_MODEL.name
+    self._client        = nil
+    self._scanner       = Scanner.new()
+    self._hl            = Highlighter.new()
+    self._messages      = {}
+    self._thinking      = false
+    self._modelDropOpen = false
+    self._minimized     = false
+
+    self:_BuildGui()
+    self:_ShowModelPicker()
+
+    getgenv().PollinationsAIChat = self
+    return self
+end
+
+function PollinationsAIChat:Destroy()
+    self._alive = false
+    if self.Gui then pcall(function() self.Gui:Destroy() end) end
+end
+
+-- ─────────────────────────────
+-- 10a. GUI CONSTRUCTION
+-- ─────────────────────────────
+function PollinationsAIChat:_BuildGui()
+    self.Gui = new("ScreenGui", {
+        Name            = "PollinationsAIChatGui_" .. uid(),
+        ResetOnSpawn    = false,
+        ZIndexBehavior  = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder    = 999,
+        Parent          = gethui_fn(),
+    })
+
+    -- WINDOW
+    self.Window = new("Frame", {
+        Name              = "Window",
+        Size              = UDim2.new(0, 530, 0, 630),
+        Position          = UDim2.new(0.5, -265, 0.5, -315),
+        BackgroundColor3  = T.WinBg,
+        BorderSizePixel   = 0,
+        Active            = true,
+        Parent            = self.Gui,
+    })
+    addCorner(self.Window, 12)
+    new("UIStroke", { Color=T.Border, Thickness=1.5, ApplyStrokeMode=Enum.ApplyStrokeMode.Border, Parent=self.Window })
+
+    -- DROP SHADOW
+    new("ImageLabel", {
+        AnchorPoint       = Vector2.new(0.5,0.5),
+        Position          = UDim2.new(0.5,0,0.5,6),
+        Size              = UDim2.new(1,40,1,40),
+        BackgroundTransparency = 1,
+        Image             = "rbxassetid://5554236805",
+        ImageColor3       = Color3.new(0,0,0),
+        ImageTransparency = 0.5,
+        ScaleType         = Enum.ScaleType.Slice,
+        SliceCenter       = Rect.new(23,23,277,277),
+        ZIndex            = -1,
+        Parent            = self.Window,
+    })
+
+    -- TOP BAR
+    self.TopBar = new("Frame", {
+        Name             = "TopBar",
+        Size             = UDim2.new(1,0,0,46),
+        BackgroundColor3 = T.TopBar,
+        BorderSizePixel  = 0,
+        ZIndex           = 2,
+        Parent           = self.Window,
+    })
+    new("UICorner", { CornerRadius=UDim.new(0,12), Parent=self.TopBar })
+    new("Frame", {
+        Size=UDim2.new(1,0,0.5,0), Position=UDim2.new(0,0,0.5,0),
+        BackgroundColor3=T.TopBar, BorderSizePixel=0, ZIndex=2, Parent=self.TopBar,
+    })
+
+    -- Title
+    new("TextLabel", {
+        Text             = "⚡ Pollinations AI",
+        Font             = Enum.Font.GothamBold,
+        TextSize         = 15,
+        TextColor3       = T.Highlight,
+        BackgroundTransparency = 1,
+        Size             = UDim2.new(1,-130,1,0),
+        Position         = UDim2.new(0,12,0,0),
+        TextXAlignment   = Enum.TextXAlignment.Left,
+        ZIndex           = 3,
+        Parent           = self.TopBar,
+    })
+
+    new("TextLabel", {
+        Text             = "FREE · No API Key",
+        Font             = Enum.Font.Gotham,
+        TextSize         = 10,
+        TextColor3       = T.PuterGreen,
+        BackgroundTransparency = 1,
+        Size             = UDim2.new(0,100,1,0),
+        Position         = UDim2.new(0,120,0,0),
+        TextXAlignment   = Enum.TextXAlignment.Left,
+        ZIndex           = 3,
+        Parent           = self.TopBar,
+    })
+
+    -- Minimize
+    self.MinBtn = new("TextButton", {
+        Text="─", Font=Enum.Font.GothamBold, TextSize=14,
+        TextColor3=Color3.fromRGB(200,200,200),
+        BackgroundColor3=T.ModelBtn,
+        Size=UDim2.new(0,28,0,28), Position=UDim2.new(1,-68,0.5,-14),
+        BorderSizePixel=0, ZIndex=4, Parent=self.TopBar,
+    })
+    addCorner(self.MinBtn, 6)
+    self.MinBtn.MouseButton1Click:Connect(function()
+        self._minimized = not self._minimized
+        for _, child in ipairs({ self._chatFrame, self.BottomBar, self.ModelBar }) do
+            if child then child.Visible = not self._minimized end
+        end
+        self.Window.Size = self._minimized
+            and UDim2.new(0,530,0,46)
+            or  UDim2.new(0,530,0,630)
+    end)
+
+    -- Close
+    self.CloseBtn = new("TextButton", {
+        Text="✕", Font=Enum.Font.GothamBold, TextSize=14,
+        TextColor3=Color3.fromRGB(220,220,220),
+        BackgroundColor3=T.Close,
+        Size=UDim2.new(0,28,0,28), Position=UDim2.new(1,-36,0.5,-14),
+        BorderSizePixel=0, ZIndex=4, Parent=self.TopBar,
+    })
+    addCorner(self.CloseBtn, 6)
+    self.CloseBtn.MouseButton1Click:Connect(function() self:Destroy() end)
+
+    -- DRAG (mouse + touch)
+    local dragging, dragStart, startPos = false, nil, nil
+    self.TopBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging=true; dragStart=input.Position; startPos=self.Window.Position
+        end
+    end)
+    self.TopBar.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging=false
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not self._alive then return end
+        if (input.UserInputType==Enum.UserInputType.MouseMovement
+         or input.UserInputType==Enum.UserInputType.Touch) and dragging then
+            local d = input.Position - dragStart
+            self.Window.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset+d.X,
+                startPos.Y.Scale, startPos.Y.Offset+d.Y)
+        end
+    end)
+
+    -- MODEL BAR
+    self.ModelBar = new("Frame", {
+        Name="ModelBar", Size=UDim2.new(1,0,0,38), Position=UDim2.new(0,0,0,46),
+        BackgroundColor3=Color3.fromRGB(17,21,27), BorderSizePixel=0, ZIndex=2, Parent=self.Window,
+    })
+    new("UIStroke",{Color=T.Border,Thickness=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Parent=self.ModelBar})
+
+    new("TextLabel",{
+        Text="Model:", Font=Enum.Font.Gotham, TextSize=12, TextColor3=T.SubText,
+        BackgroundTransparency=1, Size=UDim2.new(0,50,1,0), Position=UDim2.new(0,8,0,0),
+        TextXAlignment=Enum.TextXAlignment.Left, ZIndex=3, Parent=self.ModelBar,
+    })
+
+    self.ModelDropBtn = new("TextButton", {
+        Text=DEFAULT_MODEL.label.."  ▾", Font=Enum.Font.Gotham, TextSize=11,
+        TextColor3=T.Highlight, BackgroundColor3=T.ModelBtn,
+        Size=UDim2.new(0,290,0,26), Position=UDim2.new(0,60,0.5,-13),
+        BorderSizePixel=0, ZIndex=3, Parent=self.ModelBar,
+    })
+    addCorner(self.ModelDropBtn, 5)
+
+    self.ScanBtn = new("TextButton", {
+        Text="⟳ Scan Game", Font=Enum.Font.Gotham, TextSize=11,
+        TextColor3=T.Text, BackgroundColor3=T.ScanBtn,
+        Size=UDim2.new(0,110,0,26), Position=UDim2.new(1,-118,0.5,-13),
+        BorderSizePixel=0, ZIndex=3, Parent=self.ModelBar,
+    })
+    addCorner(self.ScanBtn, 5)
+    new("UIStroke",{Color=T.Highlight,Thickness=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Parent=self.ScanBtn})
+
+    -- MODEL DROPDOWN PANEL
+    self.ModelDropPanel = new("Frame", {
+        Name="ModelDropPanel",
+        Size=UDim2.new(0,310,0,#POLLINATIONS_MODELS*30+30),
+        Position=UDim2.new(0,60,0,84),
+        BackgroundColor3=Color3.fromRGB(18,23,31),
+        BorderSizePixel=0, Visible=false, ZIndex=20, Parent=self.Window,
+    })
+    addCorner(self.ModelDropPanel, 8)
+    new("UIStroke",{Color=T.Border,Thickness=1.5,ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Parent=self.ModelDropPanel})
+
+    new("UIListLayout",{
+        FillDirection=Enum.FillDirection.Vertical, Padding=UDim.new(0,2),
+        HorizontalAlignment=Enum.HorizontalAlignment.Center, Parent=self.ModelDropPanel,
+    })
+    addPadding(self.ModelDropPanel, 6, 6, 5, 5)
+
+    -- Header inside dropdown
+    new("TextLabel",{
+        Text="⚡ All models FREE via pollinations.ai",
+        Font=Enum.Font.GothamBold, TextSize=10,
+        TextColor3=T.PuterGreen, BackgroundTransparency=1,
+        Size=UDim2.new(1,-10,0,18), TextXAlignment=Enum.TextXAlignment.Center,
+        ZIndex=22, Parent=self.ModelDropPanel,
+    })
+
+    local dropBtns = {}
+    for _, modelInfo in ipairs(POLLINATIONS_MODELS) do
+        local isSel = modelInfo.name == self._selectedModel
+        local btn = new("TextButton", {
+            Text      = modelInfo.label .. "  [" .. modelInfo.cat .. "]",
+            Font      = Enum.Font.Gotham,
+            TextSize  = 11,
+            TextColor3 = isSel and Color3.new(1,1,1) or T.Text,
+            BackgroundColor3 = isSel and modelInfo.catColor or T.ModelBtn,
+            Size      = UDim2.new(1,-10,0,26),
+            BorderSizePixel = 0, ZIndex=21, Parent=self.ModelDropPanel,
+        })
+        addCorner(btn, 5)
+        if not isSel then
+            new("UIStroke",{Color=modelInfo.catColor,Thickness=1,Transparency=0.7,
+                ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Parent=btn})
+        end
+        dropBtns[modelInfo.name] = btn
+
+        btn.MouseButton1Click:Connect(function()
+            self._selectedModel = modelInfo.name
+            self.ModelDropBtn.Text = modelInfo.label .. "  ▾"
+            if self._client then self._client:SetModel(modelInfo.name) end
+            self.ModelDropPanel.Visible = false
+            self._modelDropOpen = false
+            for mname, mbtn in pairs(dropBtns) do
+                local mi = findModelByName(mname)
+                local sel = mname == modelInfo.name
+                mbtn.BackgroundColor3 = sel and mi.catColor or T.ModelBtn
+                mbtn.TextColor3 = sel and Color3.new(1,1,1) or T.Text
+            end
+            if self._client then
+                self:_AddMessage("ai", "Switched to **" .. modelInfo.label .. "** [" .. modelInfo.cat .. "] — still free!")
+            end
+        end)
+    end
+
+    self.ModelDropBtn.MouseButton1Click:Connect(function()
+        self._modelDropOpen = not self._modelDropOpen
+        self.ModelDropPanel.Visible = self._modelDropOpen
+    end)
+
+    -- CHAT SCROLL FRAME
+    self.ChatScrollFrame = new("ScrollingFrame", {
+        Name="ChatScrollFrame",
+        Size=UDim2.new(1,0,1,-132), Position=UDim2.new(0,0,0,84),
+        BackgroundColor3=T.WinBg, BorderSizePixel=0,
+        ScrollBarThickness=4, ScrollBarImageColor3=T.Border,
+        CanvasSize=UDim2.new(0,0,0,0),
+        AutomaticCanvasSize=Enum.AutomaticSize.Y,
+        ScrollingDirection=Enum.ScrollingDirection.Y,
+        ZIndex=2, Parent=self.Window,
+    })
+    self._chatFrame = self.ChatScrollFrame
+
+    new("UIListLayout",{
+        FillDirection=Enum.FillDirection.Vertical, Padding=UDim.new(0,10),
+        SortOrder=Enum.SortOrder.LayoutOrder, Parent=self.ChatScrollFrame,
+    })
+    addPadding(self.ChatScrollFrame, 10, 10, 10, 10)
+
+    -- BOTTOM BAR
+    self.BottomBar = new("Frame", {
+        Name="BottomBar", Size=UDim2.new(1,0,0,58), Position=UDim2.new(0,0,1,-58),
+        BackgroundColor3=Color3.fromRGB(15,19,25), BorderSizePixel=0, ZIndex=3, Parent=self.Window,
+    })
+    new("UICorner",{CornerRadius=UDim.new(0,12),Parent=self.BottomBar})
+    new("Frame",{
+        Size=UDim2.new(1,0,0.5,0),BackgroundColor3=Color3.fromRGB(15,19,25),
+        BorderSizePixel=0,ZIndex=3,Parent=self.BottomBar,
+    })
+    new("UIStroke",{Color=T.Border,Thickness=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Parent=self.BottomBar})
+
+    self.InputBox = new("TextBox", {
+        PlaceholderText="Ask anything... (/scan  /decompile <path>  /help)",
+        PlaceholderColor3=T.SubText, Text="",
+        Font=Enum.Font.Gotham, TextSize=13, TextColor3=T.Text,
+        BackgroundColor3=T.InputBg,
+        Size=UDim2.new(1,-68,0,38), Position=UDim2.new(0,8,0.5,-19),
+        BorderSizePixel=0, ClearTextOnFocus=false, MultiLine=false,
+        TextXAlignment=Enum.TextXAlignment.Left, ZIndex=4, Parent=self.BottomBar,
+    })
+    addCorner(self.InputBox, 8)
+    new("UIStroke",{Color=T.InputBd,Thickness=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Parent=self.InputBox})
+    addPadding(self.InputBox, 0, 0, 10, 10)
+
+    self.SendBtn = new("TextButton", {
+        Text="➤", Font=Enum.Font.GothamBold, TextSize=16,
+        TextColor3=Color3.new(1,1,1), BackgroundColor3=T.SendBtn,
+        Size=UDim2.new(0,50,0,38), Position=UDim2.new(1,-58,0.5,-19),
+        BorderSizePixel=0, ZIndex=4, Parent=self.BottomBar,
+    })
+    addCorner(self.SendBtn, 8)
+
+    self.SendBtn.MouseButton1Click:Connect(function() self:_OnSend() end)
+    self.InputBox.FocusLost:Connect(function(enter) if enter then self:_OnSend() end end)
+    self.ScanBtn.MouseButton1Click:Connect(function() self:_ScanGame() end)
+
+    -- Welcome message
+    self:_AddMessage("ai",
+        "⚡ **Pollinations AI** — 100% free, no API key ever!\n\n"..
+        "Powered by pollinations.ai — GPT-4.1, Gemini 2.5, Mistral, Qwen3, Amazon Nova. All free, zero auth.\n\n"..
+        "Commands:\n"..
+        "• `/scan` — scan game scripts, remotes, modules\n"..
+        "• `/decompile game.Workspace.SomeScript` — decompile a script\n"..
+        "• `/clear` — clear conversation history\n"..
+        "• `/help` — show all commands\n\n"..
+        "What would you like to know?"
+    )
+end
+
+-- ─────────────────────────────
+-- 10b. MODEL PICKER (no key needed — just pick a model and go)
+-- ─────────────────────────────
+function PollinationsAIChat:_ShowModelPicker()
+    self.ModelPicker = new("Frame", {
+        Name="ModelPicker", Size=UDim2.new(1,0,1,0),
+        BackgroundColor3=Color3.fromRGB(8,10,14), BackgroundTransparency=0.04,
+        ZIndex=100, Parent=self.Window,
+    })
+    addCorner(self.ModelPicker, 12)
+
+    -- Title
+    new("TextLabel",{
+        Text="⚡ Pollinations AI Chat",
+        Font=Enum.Font.GothamBold, TextSize=22, TextColor3=T.Highlight,
+        BackgroundTransparency=1,
+        Size=UDim2.new(1,0,0,36), Position=UDim2.new(0,0,0,18),
+        TextXAlignment=Enum.TextXAlignment.Center, ZIndex=101, Parent=self.ModelPicker,
+    })
+    new("TextLabel",{
+        Text="FREE · No Key · No Sign-Up · pollinations.ai",
+        Font=Enum.Font.Gotham, TextSize=11, TextColor3=T.PuterGreen,
+        BackgroundTransparency=1,
+        Size=UDim2.new(1,-40,0,18), Position=UDim2.new(0,20,0,52),
+        TextXAlignment=Enum.TextXAlignment.Center, ZIndex=101, Parent=self.ModelPicker,
+    })
+    new("TextLabel",{
+        Text="Pick a model and start chatting:",
+        Font=Enum.Font.GothamBold, TextSize=12, TextColor3=T.Text,
+        BackgroundTransparency=1,
+        Size=UDim2.new(1,-40,0,18), Position=UDim2.new(0,20,0,80),
+        TextXAlignment=Enum.TextXAlignment.Left, ZIndex=101, Parent=self.ModelPicker,
+    })
+
+    -- API Key input
+    new("TextLabel",{
+        Text="🔑 API Key (from enter.pollinations.ai):",
+        Font=Enum.Font.Gotham, TextSize=11, TextColor3=T.SubText,
+        BackgroundTransparency=1,
+        Size=UDim2.new(1,-40,0,16), Position=UDim2.new(0,20,0,104),
+        TextXAlignment=Enum.TextXAlignment.Left, ZIndex=101, Parent=self.ModelPicker,
+    })
+    local apiKeyBox = new("TextBox", {
+        PlaceholderText="sk_... or pk_...  (required)",
+        PlaceholderColor3=T.SubText, Text="",
+        Font=Enum.Font.Gotham, TextSize=12, TextColor3=T.Text,
+        BackgroundColor3=T.InputBg,
+        Size=UDim2.new(1,-40,0,30), Position=UDim2.new(0,20,0,122),
+        BorderSizePixel=0, ClearTextOnFocus=false, MultiLine=false,
+        TextXAlignment=Enum.TextXAlignment.Left, ZIndex=102, Parent=self.ModelPicker,
+    })
+    addCorner(apiKeyBox, 6)
+    new("UIStroke",{Color=T.InputBd,Thickness=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Parent=apiKeyBox})
+    addPadding(apiKeyBox, 0, 0, 8, 8)
+
+    -- Model grid
+    local modelGrid = new("Frame", {
+        Size=UDim2.new(1,-40,0,0), Position=UDim2.new(0,20,0,160),
+        BackgroundTransparency=1, AutomaticSize=Enum.AutomaticSize.Y,
+        ZIndex=101, Parent=self.ModelPicker,
+    })
+    new("UIGridLayout",{
+        CellSize=UDim2.new(0.5,-4,0,50),
+        CellPadding=UDim2.new(0,6,0,6),
+        SortOrder=Enum.SortOrder.LayoutOrder, Parent=modelGrid,
+    })
+
+    local pickerSelectedModel = DEFAULT_MODEL.name
+    local pickerBtns = {}
+
+    local function refreshPicker()
+        for mname, btn in pairs(pickerBtns) do
+            local mi = findModelByName(mname)
+            local sel = mname == pickerSelectedModel
+            btn.BackgroundColor3 = sel and mi.catColor or T.ModelBtn
+            btn.TextColor3 = sel and Color3.new(1,1,1) or T.Text
+        end
+    end
+
+    for i, modelInfo in ipairs(POLLINATIONS_MODELS) do
+        local isSel = modelInfo.name == pickerSelectedModel
+        local btn = new("TextButton", {
+            Text = modelInfo.label .. "\n[" .. modelInfo.cat .. "]",
+            Font = Enum.Font.Gotham, TextSize = 11,
+            TextColor3 = isSel and Color3.new(1,1,1) or T.Text,
+            BackgroundColor3 = isSel and modelInfo.catColor or T.ModelBtn,
+            Size = UDim2.new(1,0,1,0), BorderSizePixel = 0,
+            ZIndex = 102, LayoutOrder = i, Parent = modelGrid,
+        })
+        addCorner(btn, 7)
+        new("UIStroke",{Color=modelInfo.catColor,Thickness=1.2,Transparency=isSel and 0 or 0.5,
+            ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Parent=btn})
+        pickerBtns[modelInfo.name] = btn
+
+        btn.MouseButton1Click:Connect(function()
+            pickerSelectedModel = modelInfo.name
+            refreshPicker()
+        end)
+    end
+
+    -- Status
+    local statusLbl = new("TextLabel",{
+        Text="",Font=Enum.Font.Gotham,TextSize=11,TextColor3=T.Err,
+        BackgroundTransparency=1,
+        Size=UDim2.new(1,-40,0,18), Position=UDim2.new(0,20,0,488),
+        TextXAlignment=Enum.TextXAlignment.Center, ZIndex=102, Parent=self.ModelPicker,
+    })
+
+    -- Start button
+    local startBtn = new("TextButton",{
+        Text="Start Chatting  ⚡",
+        Font=Enum.Font.GothamBold, TextSize=14,
+        TextColor3=Color3.new(1,1,1), BackgroundColor3=T.PuterGreen,
+        Size=UDim2.new(1,-40,0,46), Position=UDim2.new(0,20,0,512),
+        BorderSizePixel=0, ZIndex=102, Parent=self.ModelPicker,
+    })
+    addCorner(startBtn, 9)
+
+    startBtn.MouseButton1Click:Connect(function()
+        local apiKey = apiKeyBox.Text:gsub("^%s+",""):gsub("%s+$","")
+        if #apiKey < 10 or (not apiKey:match("^sk_") and not apiKey:match("^pk_")) then
+            statusLbl.TextColor3 = T.Err
+            statusLbl.Text = "Enter a valid API key (sk_... or pk_...) from enter.pollinations.ai"
+            return
+        end
+
+        startBtn.Text = "Connecting..."
+        startBtn.BackgroundColor3 = T.ScanBtn
+        statusLbl.TextColor3 = T.SubText
+        statusLbl.Text = "Connecting to gen.pollinations.ai..."
+
+        task.spawn(function()
+            self._selectedModel = pickerSelectedModel
+            self._apiKey        = apiKey
+            self._client = PollinationsClient.new(pickerSelectedModel, apiKey)
+
+            -- Warm up: get token + send test ping
+            local reply, err = self._client:Send("Reply with exactly: OK")
+
+            task.wait()
+            if err then
+                statusLbl.TextColor3 = T.Err
+                statusLbl.Text = "Error: " .. tostring(err)
+                startBtn.Text = "Start Chatting  ⚡"
+                startBtn.BackgroundColor3 = T.PuterGreen
+            else
+                self._client:ClearHistory()
+                -- Inject game context silently
+                local ctx = self:_BuildGameContext()
+                self._client:AddContext("system", ctx)
+
+                local mi = findModelByName(pickerSelectedModel)
+                self.ModelDropBtn.Text = mi.label .. "  ▾"
+                self.ModelPicker.Visible = false
+
+                self:_AddMessage("ai",
+                    "Connected to **"..mi.label.."** ["..mi.cat.."] via gen.pollinations.ai\n\n"..
+                    "Game context loaded. Try `/scan` for a fresh scan or just ask anything!"
+                )
+            end
+        end)
+    end)
+end
+
+-- ─────────────────────────────
+-- 10c. GAME CONTEXT
+-- ─────────────────────────────
+function PollinationsAIChat:_BuildGameContext()
+    local data   = self._scanner:ScanAll()
+    local report = self._scanner:FormatReport(data)
+    local gameName = "Unknown"
+    pcall(function() gameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name end)
+    if not gameName or gameName == "" then pcall(function() gameName = game.Name end) end
+    return ("You are an AI assistant integrated into a Roblox game session.\n"
+        .."Game: "..tostring(gameName).." | PlaceId: "..tostring(game.PlaceId)
+        .." | JobId: "..tostring(game.JobId).."\n\n"
+        ..report.."\n\n"
+        .."Help the user understand, analyze, and work with this Roblox game. "
+        .."You have deep knowledge of Luau, Roblox APIs, game design, and exploit development. "
+        .."When showing code, always use ``` code blocks.")
+end
+
+-- ─────────────────────────────
+-- 10d. MESSAGE RENDERER
+-- ─────────────────────────────
+function PollinationsAIChat:_AddMessage(role, text)
+    local isUser    = role == "user"
+    local layoutOrder = #self._messages + 1
+    table.insert(self._messages, { role=role, text=text })
+
+    local wrapper = new("Frame", {
+        BackgroundTransparency=1, Size=UDim2.new(1,0,0,0),
+        AutomaticSize=Enum.AutomaticSize.Y,
+        LayoutOrder=layoutOrder, ZIndex=2, Parent=self.ChatScrollFrame,
+    })
+
+    -- Avatar label
+    new("TextLabel",{
+        Text = isUser and "You" or "AI",
+        Font=Enum.Font.GothamBold, TextSize=10,
+        TextColor3 = isUser and T.SendBtn or T.PuterGreen,
+        BackgroundTransparency=1,
+        Size=UDim2.new(0,28,0,14),
+        Position = isUser and UDim2.new(1,-38,0,0) or UDim2.new(0,0,0,0),
+        ZIndex=3, Parent=wrapper,
+    })
+
+    local bubbleContainer = new("Frame",{
+        BackgroundTransparency=1, Size=UDim2.new(1,0,0,0),
+        AutomaticSize=Enum.AutomaticSize.Y,
+        Position=UDim2.new(0,0,0,16), ZIndex=2, Parent=wrapper,
+    })
+
+    local segments = parseMarkdown(text)
+
+    for _, seg in ipairs(segments) do
+        if seg.type == "text" and #seg.content:gsub("%s","") > 0 then
+            local bubble = new("TextLabel",{
+                Text=seg.content, Font=Enum.Font.Gotham, TextSize=13,
+                TextColor3=T.Text,
+                BackgroundColor3 = isUser and T.UserBubble or T.AiBubble,
+                Size=UDim2.new(0.85,0,0,0), AutomaticSize=Enum.AutomaticSize.Y,
+                AnchorPoint = isUser and Vector2.new(1,0) or Vector2.new(0,0),
+                Position    = isUser and UDim2.new(1,0,0,0) or UDim2.new(0,0,0,0),
+                TextWrapped=true, RichText=false,
+                TextXAlignment=Enum.TextXAlignment.Left,
+                TextYAlignment=Enum.TextYAlignment.Top,
+                BorderSizePixel=0, ZIndex=3, Parent=bubbleContainer,
+            })
+            addCorner(bubble, 10)
+            addPadding(bubble, 8, 8, 12, 12)
+        elseif seg.type == "code" then
+            local codeWrap = new("Frame",{
+                BackgroundColor3=T.CodeBg, Size=UDim2.new(1,0,0,0),
+                AutomaticSize=Enum.AutomaticSize.Y,
+                BorderSizePixel=0, ZIndex=3, Parent=bubbleContainer,
+            })
+            addCorner(codeWrap, 6)
+            new("UIStroke",{Color=Color3.fromRGB(48,58,72),Thickness=1,
+                ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Parent=codeWrap})
+
+            local yOff = 0
+            if seg.lang and #seg.lang > 0 then
+                new("TextLabel",{
+                    Text=seg.lang, Font=Enum.Font.Gotham, TextSize=10,
+                    TextColor3=T.PuterGreen, BackgroundColor3=Color3.fromRGB(16,20,28),
+                    Size=UDim2.new(1,0,0,20), BorderSizePixel=0, ZIndex=4, Parent=codeWrap,
+                })
+                yOff = 20
+            end
+
+            local isLuau = seg.lang=="" or seg.lang=="lua" or seg.lang=="luau"
+            local content = seg.content
+            local displayText = (isLuau and #content < 8000)
+                and self._hl:Run(content)
+                or  content:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;"):sub(1,6000)
+
+            new("TextLabel",{
+                Text=displayText, Font=Enum.Font.Code, TextSize=12,
+                TextColor3=T.CodeText, BackgroundTransparency=1,
+                Size=UDim2.new(1,0,0,0), AutomaticSize=Enum.AutomaticSize.Y,
+                Position=UDim2.new(0,0,0,yOff),
+                TextWrapped=true, RichText=(isLuau and #content < 8000),
+                TextXAlignment=Enum.TextXAlignment.Left,
+                TextYAlignment=Enum.TextYAlignment.Top,
+                BorderSizePixel=0, ZIndex=4, Parent=codeWrap,
+            })
+            addPadding(codeWrap, 6, 8, 10, 10)
+        end
+    end
+
+    task.wait()
+    self.ChatScrollFrame.CanvasPosition = Vector2.new(
+        0, math.max(0, self.ChatScrollFrame.AbsoluteCanvasSize.Y - self.ChatScrollFrame.AbsoluteSize.Y))
+end
+
+-- ─────────────────────────────
+-- 10e. THINKING INDICATOR
+-- ─────────────────────────────
+function PollinationsAIChat:_ShowThinking()
+    if self._thinkingFrame then return end
+    local wrap = new("Frame",{
+        BackgroundTransparency=1, Size=UDim2.new(1,0,0,38),
+        LayoutOrder=#self._messages+999, ZIndex=2, Parent=self.ChatScrollFrame,
+    })
+    self._thinkingFrame = wrap
+
+    local dot = new("Frame",{
+        BackgroundColor3=T.AiBubble, Size=UDim2.new(0,70,0,30),
+        Position=UDim2.new(0,0,0,4), BorderSizePixel=0, ZIndex=3, Parent=wrap,
+    })
+    addCorner(dot, 10)
+    self._thinkingLabel = new("TextLabel",{
+        Text="●  ●  ●", Font=Enum.Font.GothamBold, TextSize=13,
+        TextColor3=T.SubText, BackgroundTransparency=1,
+        Size=UDim2.new(1,0,1,0), ZIndex=4, Parent=dot,
+    })
+    task.spawn(function()
+        local dots = {"●","●  ●","●  ●  ●"}
+        local i = 1
+        while self._thinkingFrame and self._alive do
+            if self._thinkingLabel then self._thinkingLabel.Text = dots[i] end
+            i = (i % 3) + 1
+            task.wait(0.38)
+        end
+    end)
+    task.wait()
+    self.ChatScrollFrame.CanvasPosition = Vector2.new(
+        0, math.max(0, self.ChatScrollFrame.AbsoluteCanvasSize.Y - self.ChatScrollFrame.AbsoluteSize.Y))
+end
+
+function PollinationsAIChat:_HideThinking()
+    if self._thinkingFrame then
+        pcall(function() self._thinkingFrame:Destroy() end)
+        self._thinkingFrame = nil
+        self._thinkingLabel = nil
+    end
+end
+
+-- ─────────────────────────────
+-- 10f. SEND HANDLER + COMMANDS
+-- ─────────────────────────────
+function PollinationsAIChat:_OnSend()
+    if self._thinking then return end
+    if not self._client then
+        self:_AddMessage("ai", "Please select a model first using the setup screen.")
+        return
+    end
+
+    local text = self.InputBox.Text:gsub("^%s+",""):gsub("%s+$","")
+    if #text == 0 then return end
+    self.InputBox.Text = ""
+    self:_AddMessage("user", text)
+
+    -- Built-in commands
+    if text:lower() == "/scan" then self:_ScanGame(); return end
+
+    if text:lower():sub(1,11) == "/decompile " then
+        self:_DecompileByPath(text:sub(12)); return
+    end
+
+    if text:lower() == "/clear" then
+        self._client:ClearHistory()
+        self._client:AddContext("system", self:_BuildGameContext())
+        self:_AddMessage("ai", "Conversation cleared. Game context reloaded.")
+        return
+    end
+
+    if text:lower() == "/help" then
+        self:_AddMessage("ai",
+            "**Commands:**\n"..
+            "```\n"..
+            "/scan              — Scan game for scripts, remotes, modules\n"..
+            "/decompile <path>  — Decompile a script by game path\n"..
+            "                     e.g. /decompile game.Workspace.MyScript\n"..
+            "/clear             — Clear conversation history\n"..
+            "/help              — Show this message\n"..
+            "```\n"..
+            "Or just chat normally — ask anything about Roblox, Luau, or the game!"
+        )
+        return
+    end
+
+    -- Send to Pollinations AI
+    self._thinking = true
+    self.SendBtn.BackgroundColor3 = T.ScanBtn
+    self:_ShowThinking()
+
+    task.spawn(function()
+        local reply, err = self._client:Send(text)
+        task.wait()
+        self:_HideThinking()
+        self._thinking = false
+        self.SendBtn.BackgroundColor3 = T.SendBtn
+
+        if err then
+            self:_AddMessage("ai",
+                "Error: " .. tostring(err) ..
+                "\n\nTips:\n- Check your API key at enter.pollinations.ai\n"..
+                "- Make sure your executor allows outbound HTTPS\n"..
+                "- HTTP 401 = invalid/expired key\n"..
+                "- HTTP 402 = no pollen balance\n"..
+                "- Try `/clear` to reset context, or switch models")
+        else
+            self:_AddMessage("ai", reply or "(empty response)")
+        end
+    end)
+end
+
+-- ─────────────────────────────
+-- 10g. SCAN GAME
+-- ─────────────────────────────
+function PollinationsAIChat:_ScanGame()
+    if self._thinking then return end
+    self._thinking = true
+    self.ScanBtn.BackgroundColor3 = T.ScanBtnHv
+    self.ScanBtn.Text = "Scanning..."
+    self:_ShowThinking()
+
+    task.spawn(function()
+        local data   = self._scanner:ScanAll()
+        local report = self._scanner:FormatReport(data)
+        task.wait()
+        self:_HideThinking()
+        self._thinking = false
+        self.ScanBtn.BackgroundColor3 = T.ScanBtn
+        self.ScanBtn.Text = "⟳ Scan Game"
+
+        self:_AddMessage("ai", "**Game Scan Complete!**\n\n```\n"..report.."\n```")
+
+        if self._client then
+            self._client:AddContext("user", "Updated game scan:\n"..report)
+            self._client:AddContext("assistant", "Got it — updated scan stored in context.")
+        end
+    end)
+end
+
+-- ─────────────────────────────
+-- 10h. DECOMPILE
+-- ─────────────────────────────
+function PollinationsAIChat:_DecompileByPath(pathStr)
+    if self._thinking then return end
+    self._thinking = true
+    self:_ShowThinking()
+
+    task.spawn(function()
+        local target = nil
+        pcall(function()
+            target = game
+            for part in pathStr:gmatch("[^%.%[%]\"]+") do
+                if part ~= "game" and part ~= "" then
+                    local ok, child = pcall(function() return target:FindFirstChild(part) or target[part] end)
+                    if ok and child then target = child else break end
+                end
+            end
+        end)
+
+        self:_HideThinking()
+        self._thinking = false
+
+        if not target or target == game then
+            self:_AddMessage("ai", "Could not find: `"..pathStr.."`\n\nTip: run `/scan` first to see valid paths.")
+            return
+        end
+
+        local cls = tostring(target.ClassName)
+        if cls ~= "LocalScript" and cls ~= "Script" and cls ~= "ModuleScript" then
+            self:_AddMessage("ai", "`"..pathStr.."` is a `"..cls.."` — only scripts can be decompiled.")
+            return
+        end
+
+        self:_AddMessage("ai", "Decompiling `"..tostring(target.Name).."` (`"..cls.."`)...")
+        self._thinking = true
+        self:_ShowThinking()
+
+        task.spawn(function()
+            local source, ok = "", false
+            pcall(function() source = target.Source; if #source > 0 then ok = true end end)
+            if not ok then
+                pcall(function() source = decompile_fn(target); if #source > 0 then ok = true end end)
+            end
+
+            task.wait()
+            self:_HideThinking()
+            self._thinking = false
+
+            if not ok or #source == 0 then
+                self:_AddMessage("ai", "Could not decompile `"..tostring(target.Name).."`.\n\n"..
+                    "Possible reasons:\n- Script is obfuscated\n- Executor doesn't support decompile()\n- Script is protected")
+                return
+            end
+
+            local display = #source > 8000 and (source:sub(1,8000).."\n-- [truncated, "..#source.." chars total]") or source
+            self:_AddMessage("ai", "**Decompiled: `"..tostring(target.Name).."` ("..cls..")**\n```lua\n"..display.."\n```")
+
+            if self._client then
+                local snippet = #source > 3000 and source:sub(1,3000).."\n-- [truncated]" or source
+                self._client:AddContext("user", "I decompiled `"..pathStr.."`. Source:\n```lua\n"..snippet.."\n```\nAnalyze it.")
+                self._client:AddContext("assistant", "Source loaded. Ask me anything about it.")
+                self:_AddMessage("ai", "Source loaded into context — ask me to analyze, explain, or modify it!")
+            end
+        end)
+    end)
+end
+
+-- ===========================
+-- 11. LAUNCH
+-- ===========================
+local chat = PollinationsAIChat.new()
+
+pcall(function()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title    = "Pollinations AI Chat",
+        Text     = "Loaded! GPT-4.1, Gemini 2.5, Qwen3 & more. No API key needed!",
+        Duration = 4,
+    })
+end)
