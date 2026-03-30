@@ -1,7 +1,7 @@
 --[[
-    VDAMBOT White
-    Advanced Camera Lock Script – Mobile Ready
-    by VDAMBOT
+    vdaimbot • beta
+        beta version
+    2026, March 30 on Monday Last Updated.
 --]]
 
 local Players          = game:GetService('Players')
@@ -410,7 +410,7 @@ Logo.Size                   = UDim2.new(0, 160, 1, 0)
 Logo.Position               = UDim2.new(0, 12, 0, 0)
 Logo.BackgroundTransparency = 1
 Logo.Font                   = Enum.Font.GothamBold
-Logo.Text                   = "VDAMBOT White"
+Logo.Text                   = "vdaimbot • underdevelopment"
 Logo.TextColor3             = Color3.fromRGB(255, 255, 255)
 Logo.TextSize               = 13
 Logo.TextXAlignment         = Enum.TextXAlignment.Left
@@ -1071,8 +1071,8 @@ end)
 
 task.delay(0.6, function()
     game:GetService('StarterGui'):SetCore('SendNotification', {
-        Title    = 'VDAMBOT White',
-        Text     = 'Loaded! ≡ opens menu (scroll inside). Enable aimbot first, then tap enemy.',
+        Title    = 'vdaimbot responded',
+        Text     = 'this aimbot script is under development, IMPORTANT: Always enable auto snap aimbot no askin. ☺️',
         Duration = 5,
     })
 end)
