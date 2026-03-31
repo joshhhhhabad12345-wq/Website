@@ -1,7 +1,5 @@
 --[[
-    VDAMBOT White
-    Advanced Camera Lock Script – Mobile Ready
-    by VDAMBOT
+    source
 --]]
 
 local Players          = game:GetService('Players')
@@ -499,7 +497,7 @@ Logo.Size                   = UDim2.new(0, 160, 1, 0)
 Logo.Position               = UDim2.new(0, 12, 0, 0)
 Logo.BackgroundTransparency = 1
 Logo.Font                   = Enum.Font.GothamBold
-Logo.Text                   = "VDAMBOT White"
+Logo.Text                   = "vdaimbot • underdevelopment"
 Logo.TextColor3             = Color3.fromRGB(255, 255, 255)
 Logo.TextSize               = 13
 Logo.TextXAlignment         = Enum.TextXAlignment.Left
